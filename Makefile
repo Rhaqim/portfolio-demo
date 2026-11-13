@@ -142,6 +142,10 @@ bump-ussd: ## Move to a ussdframework commit: make bump-ussd rev=abc1234
 
 ##@ Server (run from /opt/demo on the box; CI normally does this)
 
+.PHONY: server-setup
+server-setup: ## Bring a fresh box to a running stack (idempotent; see scripts/server-setup.sh --help)
+	./scripts/server-setup.sh
+
 .PHONY: server-up
 server-up: ## Pull and start images for a commit: make server-up TAG=<sha>
 	@test -n "$(TAG)" || { echo "usage: make server-up TAG=<git sha or latest>"; exit 1; }

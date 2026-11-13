@@ -148,6 +148,21 @@ multiplayer game with yourself.
 
 ## Server setup (once)
 
+**Quick path.** On the box:
+
+```bash
+git clone https://github.com/Rhaqim/portfolio-demo.git /opt/demo
+cd /opt/demo && ./scripts/server-setup.sh --deploy-user deploy --deploy-key "ssh-ed25519 AAAA..."
+```
+
+The script is idempotent, so you can re-run it any time. It installs Docker,
+writes `.env` with a generated `ADMIN_TOKEN`, asks you to paste the origin
+certificate (step 3), restricts 80/443 to Cloudflare (step 4, both ufw and
+Docker's `DOCKER-USER` chain), pulls the images (or builds them if the pull
+fails), starts the stack, checks every service, and prints the GitHub secrets
+for step 6. You still do DNS (step 2) and GitHub (step 6) by hand. The manual
+steps below describe what the script does.
+
 1. **Docker.** Install Docker Engine and the compose plugin. Create a deploy
    user in the `docker` group, and `sudo mkdir -p /opt/demo/certs && sudo chown deploy /opt/demo`.
 2. **DNS.** In Cloudflare, add `api` → the server IP, **proxied** (orange
