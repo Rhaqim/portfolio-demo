@@ -1,0 +1,93 @@
+# api.rhaqim.com: the demo services' API. The pages live on rhaqim.com and
+# call this host from the browser, so it answers CORS for the portfolio only.
+#
+# Cloudflare sits in front (proxied DNS, SSL mode "Full (strict)"). Caddy
+# serves a Cloudflare Origin Certificate from /certs, so there is no ACME
+# dance through the proxy, and browsers that reach the origin directly get a
+# certificate they don't trust. See README.md, "Server setup".
+{
+	servers {
+		# Caddy passes CF-Connecting-IP through untouched and the services rate
+		# limit on it, which is only safe because the firewall admits nothing but
+		# Cloudflare on 443.
+		trusted_proxies static private_ranges
+	}
+}
+
+(cors) {
+	# Pages on these origins may call the API with the visitor's cookie.
+	@cors_origin header_regexp Origin {$CORS_ORIGINS:^https://(www\.)?rhaqim\.com$}
+	header @cors_origin {
+		Access-Control-Allow-Origin "{http.request.header.Origin}"
+		Access-Control-Allow-Credentials "true"
+		Vary "Origin"
+	}
+	@preflight {
+		method OPTIONS
+		header_regexp Origin {$CORS_ORIGINS:^https://(www\.)?rhaqim\.com$}
+	}
+	handle @preflight {
+		header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+		header Access-Control-Allow-Headers "Content-Type, X-LLM-Key, X-LLM-Model, Last-Event-ID"
+		header Access-Control-Max-Age "600"
+		respond 204
+	}
+}
+
+(routes) {
+	# Uploads get a little over buckt's 5 MB file cap; everything else is small.
+	@upload path /api/buckt/files
+	request_body @upload {
+		max_size 6MB
+	}
+	@small not path /api/buckt/files
+	request_body @small {
+		max_size 128KB
+	}
+
+	handle /api/ussd/* {
+		reverse_proxy ussd:8080
+	}
+	handle /api/buckt/* {
+		reverse_proxy buckt:8080
+	}
+	handle /api/loom/* {
+		# Agent runs and game rooms stream server-sent events; flush every
+		# write, and let game streams stay open.
+		reverse_proxy loom:8080 {
+			flush_interval -1
+		}
+	}
+	handle /api/* {
+		reverse_proxy hub:8080
+	}
+	handle {
+		respond "Not found" 404
+	}
+}
+
+{$DEMO_DOMAIN:api.rhaqim.com} {
+	tls /certs/origin.pem /certs/origin-key.pem
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+	import cors
+	import routes
+
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				# The loom demo sends visitors' LLM keys in this header. Never log it.
+				request>headers>X-Llm-Key delete
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+			}
+		}
+	}
+}

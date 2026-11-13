@@ -1,0 +1,75 @@
+# The demo stack. CI builds and pushes every image; the server only pulls.
+#   TAG=<git sha> docker compose pull && TAG=<git sha> docker compose up -d
+# Local: see docker-compose.local.yml.
+
+name: demo
+
+x-service: &service
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+x-shared-db: &shared-db
+  DEMO_DB: /data/demo.db
+
+services:
+  gateway:
+    <<: *service
+    image: ${REGISTRY:-ghcr.io/rhaqim/demo}/gateway:${TAG:-latest}
+    build: { context: gateway }
+    ports: ["80:80", "443:443"]
+    environment:
+      DEMO_DOMAIN: ${DEMO_DOMAIN:-api.rhaqim.com}
+      # Regex of page origins allowed to call the API with the visitor cookie.
+      CORS_ORIGINS: ${CORS_ORIGINS:-^https://(www\.)?rhaqim\.com$}
+    volumes:
+      - ./certs:/certs:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [hub, ussd, buckt, loom]
+    mem_limit: 128m
+
+  hub:
+    <<: *service
+    image: ${REGISTRY:-ghcr.io/rhaqim/demo}/hub:${TAG:-latest}
+    build: { context: services/go, args: { CMD: hub } }
+    environment:
+      <<: *shared-db
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      FEEDBACK_WEBHOOK_URL: ${FEEDBACK_WEBHOOK_URL:-}
+    volumes: [demo_data:/data]
+    mem_limit: 64m
+
+  buckt:
+    <<: *service
+    image: ${REGISTRY:-ghcr.io/rhaqim/demo}/buckt:${TAG:-latest}
+    build: { context: services/go, args: { CMD: buckt } }
+    environment:
+      <<: *shared-db
+      BUCKT_MEDIA_DIR: /data/buckt-media
+    volumes: [demo_data:/data]
+    mem_limit: 384m
+
+  loom:
+    <<: *service
+    image: ${REGISTRY:-ghcr.io/rhaqim/demo}/loom:${TAG:-latest}
+    build: { context: services/go, args: { CMD: loom } }
+    environment:
+      <<: *shared-db
+      OPENAI_MODELS: ${OPENAI_MODELS:-gpt-5-mini,gpt-5}
+    volumes: [demo_data:/data]
+    mem_limit: 256m
+
+  ussd:
+    <<: *service
+    image: ${REGISTRY:-ghcr.io/rhaqim/demo}/ussd:${TAG:-latest}
+    build: { context: services/ussd }
+    mem_limit: 128m
+
+volumes:
+  # One volume, one SQLite file (demo.db) shared by hub, buckt and loom, plus
+  # buckt's media. Each service namespaces its tables: demo_*, buckt_*, loom_*.
+  demo_data:
+  caddy_data:
+  caddy_config:

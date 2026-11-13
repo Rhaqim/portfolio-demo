@@ -1,0 +1,21 @@
+[package]
+name = "ussd-demo"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.91"
+resolver = "3"
+publish = false
+
+[dependencies]
+# Pinned to a commit so a push to ussdframework never changes the demo
+# without a deliberate bump here.
+ussdframework = { git = "https://github.com/Rhaqim/ussdframework", rev = "a12ae3c", default-features = false }
+actix-web = "4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true

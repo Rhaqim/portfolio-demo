@@ -1,0 +1,45 @@
+# Local development: plain HTTP API on :8080 for the portfolio dev server
+# (npm run dev on http://localhost:4321).
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
+{
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
+(cors) {
+	@cors_origin header_regexp Origin ^http://(localhost|127\.0\.0\.1):[0-9]+$
+	header @cors_origin {
+		Access-Control-Allow-Origin "{http.request.header.Origin}"
+		Access-Control-Allow-Credentials "true"
+		Vary "Origin"
+	}
+	@preflight {
+		method OPTIONS
+		header_regexp Origin ^http://(localhost|127\.0\.0\.1):[0-9]+$
+	}
+	handle @preflight {
+		header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+		header Access-Control-Allow-Headers "Content-Type, X-LLM-Key, X-LLM-Model, Last-Event-ID"
+		respond 204
+	}
+}
+
+:8080 {
+	encode gzip
+	import cors
+	handle /api/ussd/* {
+		reverse_proxy ussd:8080
+	}
+	handle /api/buckt/* {
+		reverse_proxy buckt:8080
+	}
+	handle /api/loom/* {
+		reverse_proxy loom:8080 {
+			flush_interval -1
+		}
+	}
+	handle /api/* {
+		reverse_proxy hub:8080
+	}
+}

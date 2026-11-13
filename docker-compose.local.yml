@@ -1,0 +1,14 @@
+# Local overrides: the API on http://localhost:8080, images built locally.
+# Run the portfolio with `npm run dev` (http://localhost:4321) and set
+# PUBLIC_DEMO_API=http://localhost:8080 in the portfolio's .env.
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
+services:
+  gateway:
+    image: demo-local/gateway
+    ports: !override ["8080:8080"]
+    command: ["caddy", "run", "--config", "/etc/caddy/Caddyfile.local", "--adapter", "caddyfile"]
+    volumes: !override []
+  hub: { image: demo-local/hub }
+  buckt: { image: demo-local/buckt }
+  loom: { image: demo-local/loom }
+  ussd: { image: demo-local/ussd }

@@ -1,0 +1,237 @@
+{
+  "menus": {
+    "InitialScreen": {
+      "text": "QuickLoan",
+      "screen_type": "Initial",
+      "default_next_screen": "MainMenu"
+    },
+
+    "MainMenu": {
+      "text": "QuickLoan",
+      "screen_type": "Menu",
+      "default_next_screen": "Goodbye",
+      "menu_items": {
+        "Limit":     { "option": "1", "display_name": "Check my limit", "next_screen": "LimitFn" },
+        "Borrow":    { "option": "2", "display_name": "Borrow",         "next_screen": "BorrowLimitFn" },
+        "Repay":     { "option": "3", "display_name": "Repay",          "next_screen": "RepayFn" },
+        "Statement": { "option": "4", "display_name": "Mini statement", "next_screen": "StatementFn" },
+        "Exit":      { "option": "5", "display_name": "Exit",           "next_screen": "Goodbye" }
+      }
+    },
+
+    "LimitFn": {
+      "text": "",
+      "screen_type": "Function",
+      "function": "check_limit",
+      "default_next_screen": "LimitMenu"
+    },
+
+    "LimitMenu": {
+      "text": "Your limit is KES {{limit.limit}}.\nAvailable now: KES {{limit.available}}.",
+      "screen_type": "Menu",
+      "default_next_screen": "MainMenu",
+      "menu_items": {
+        "BorrowNow": { "option": "1", "display_name": "Borrow now", "next_screen": "AmountInput" },
+        "Home":      { "option": "2", "display_name": "Main menu",  "next_screen": "MainMenu" }
+      }
+    },
+
+    "BorrowLimitFn": {
+      "text": "",
+      "screen_type": "Function",
+      "function": "check_limit",
+      "default_next_screen": "AmountInput"
+    },
+
+    "AmountInput": {
+      "text": "How much do you want to borrow?\nKES 100 to {{limit.available}}:",
+      "screen_type": "Input",
+      "input_identifier": "amount",
+      "validation_regex": "^[1-9][0-9]{2,5}$",
+      "max_retries": 3,
+      "timeout_screen": "TooManyTries",
+      "default_next_screen": "DaysInput"
+    },
+
+    "DaysInput": {
+      "text": "Repay in how many days?\nEnter 7, 14 or 30:",
+      "screen_type": "Input",
+      "input_identifier": "days",
+      "validation_regex": "^(7|14|30)$",
+      "max_retries": 3,
+      "timeout_screen": "TooManyTries",
+      "default_next_screen": "QuoteFn"
+    },
+
+    "QuoteFn": {
+      "text": "",
+      "screen_type": "Function",
+      "function": "quote_loan",
+      "default_next_screen": "QuoteRouter"
+    },
+
+    "QuoteRouter": {
+      "text": "",
+      "screen_type": "Router",
+      "router_options": [
+        { "router_option": "{{quote.status == 'ok'}}",         "next_screen": "ConfirmPin" },
+        { "router_option": "{{quote.status == 'over_limit'}}", "next_screen": "OverLimit" }
+      ],
+      "default_next_screen": "ServiceError"
+    },
+
+    "OverLimit": {
+      "text": "KES {{quote.amount}} is above your available limit of KES {{quote.available}}.",
+      "screen_type": "Menu",
+      "default_next_screen": "MainMenu",
+      "menu_items": {
+        "Smaller": { "option": "1", "display_name": "Try a smaller amount", "next_screen": "AmountInput" },
+        "Home":    { "option": "2", "display_name": "Main menu",            "next_screen": "MainMenu" }
+      }
+    },
+
+    "ConfirmPin": {
+      "text": "Borrow KES {{quote.amount}} for {{days}} days.\nFee KES {{quote.fee}}. Repay KES {{quote.total}} by {{quote.due}}.\nEnter PIN to accept:",
+      "screen_type": "Input",
+      "input_identifier": "pin",
+      "validation_regex": "^[0-9]{4}$",
+      "max_retries": 3,
+      "timeout_screen": "TooManyTries",
+      "default_next_screen": "DisburseFn"
+    },
+
+    "DisburseFn": {
+      "text": "",
+      "screen_type": "Function",
+      "function": "disburse_loan",
+      "default_next_screen": "DisburseRouter"
+    },
+
+    "DisburseRouter": {
+      "text": "",
+      "screen_type": "Router",
+      "router_options": [
+        { "router_option": "{{loan.status == 'ok'}}",      "next_screen": "Disbursed" },
+        { "router_option": "{{loan.status == 'bad_pin'}}", "next_screen": "WrongPin" }
+      ],
+      "default_next_screen": "ServiceError"
+    },
+
+    "Disbursed": {
+      "text": "Done. KES {{loan.amount}} sent to your mobile wallet.\nRef {{loan.reference}}. Repay KES {{loan.total}} by {{loan.due}}.",
+      "screen_type": "Quit",
+      "default_next_screen": "MainMenu"
+    },
+
+    "RepayFn": {
+      "text": "",
+      "screen_type": "Function",
+      "function": "repay_info",
+      "default_next_screen": "RepayRouter"
+    },
+
+    "RepayRouter": {
+      "text": "",
+      "screen_type": "Router",
+      "router_options": [
+        { "router_option": "{{repay.status == 'due'}}", "next_screen": "RepayMenu" }
+      ],
+      "default_next_screen": "NothingDue"
+    },
+
+    "RepayMenu": {
+      "text": "You owe KES {{repay.total}}, due {{repay.due}}.",
+      "screen_type": "Menu",
+      "default_next_screen": "MainMenu",
+      "menu_items": {
+        "PayNow": { "option": "1", "display_name": "Repay in full now", "next_screen": "RepayPin" },
+        "Home":   { "option": "2", "display_name": "Main menu",         "next_screen": "MainMenu" }
+      }
+    },
+
+    "RepayPin": {
+      "text": "Repay KES {{repay.total}} from your wallet.\nEnter PIN:",
+      "screen_type": "Input",
+      "input_identifier": "pin",
+      "validation_regex": "^[0-9]{4}$",
+      "max_retries": 3,
+      "timeout_screen": "TooManyTries",
+      "default_next_screen": "RepayLoanFn"
+    },
+
+    "RepayLoanFn": {
+      "text": "",
+      "screen_type": "Function",
+      "function": "repay_loan",
+      "default_next_screen": "RepaidRouter"
+    },
+
+    "RepaidRouter": {
+      "text": "",
+      "screen_type": "Router",
+      "router_options": [
+        { "router_option": "{{repaid.status == 'ok'}}",      "next_screen": "Repaid" },
+        { "router_option": "{{repaid.status == 'bad_pin'}}", "next_screen": "WrongPin" }
+      ],
+      "default_next_screen": "ServiceError"
+    },
+
+    "Repaid": {
+      "text": "Paid KES {{repaid.amount}}. Thank you.\nYour full limit is available again.",
+      "screen_type": "Quit",
+      "default_next_screen": "MainMenu"
+    },
+
+    "NothingDue": {
+      "text": "You have nothing to repay. Dial *384# any time to borrow.",
+      "screen_type": "Quit",
+      "default_next_screen": "MainMenu"
+    },
+
+    "StatementFn": {
+      "text": "",
+      "screen_type": "Function",
+      "function": "mini_statement",
+      "default_next_screen": "Statement"
+    },
+
+    "Statement": {
+      "text": "Last transactions:\n{{statement.lines}}",
+      "screen_type": "Quit",
+      "default_next_screen": "MainMenu"
+    },
+
+    "WrongPin": {
+      "text": "Wrong PIN. For your security this session has ended.",
+      "screen_type": "Quit",
+      "default_next_screen": "MainMenu"
+    },
+
+    "TooManyTries": {
+      "text": "Too many invalid attempts. Please dial again.",
+      "screen_type": "Quit",
+      "default_next_screen": "MainMenu"
+    },
+
+    "ServiceError": {
+      "text": "Service temporarily unavailable. Please try again later.",
+      "screen_type": "Quit",
+      "default_next_screen": "MainMenu"
+    },
+
+    "Goodbye": {
+      "text": "Thank you for using QuickLoan.",
+      "screen_type": "Quit",
+      "default_next_screen": "MainMenu"
+    }
+  },
+
+  "services": {
+    "check_limit":    { "function_name": "check_limit",    "data_key": "limit" },
+    "quote_loan":     { "function_name": "quote_loan",     "data_key": "quote" },
+    "disburse_loan":  { "function_name": "disburse_loan",  "data_key": "loan" },
+    "repay_info":     { "function_name": "repay_info",     "data_key": "repay" },
+    "repay_loan":     { "function_name": "repay_loan",     "data_key": "repaid" },
+    "mini_statement": { "function_name": "mini_statement", "data_key": "statement" }
+  }
+}

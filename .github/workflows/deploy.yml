@@ -1,0 +1,127 @@
+# Build every demo image, push it to GHCR, then roll the Hetzner box forward.
+#
+# Repository secrets:
+#   DEPLOY_HOST         server IP or hostname
+#   DEPLOY_USER         SSH user (in the docker group)
+#   DEPLOY_SSH_KEY      private key for that user (ed25519, deploy-only)
+#   DEPLOY_KNOWN_HOSTS  output of `ssh-keyscan -t ed25519 <host>`, so the host key is pinned
+# Repository variables (optional):
+#   PLATFORM            linux/amd64 (default) or linux/arm64 for Hetzner CAX machines
+#   DEPLOY_DIR          /opt/demo (default)
+#   DEMO_DOMAIN         api.rhaqim.com (default), used by the smoke test
+
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io/${{ github.repository_owner }}/demo
+
+jobs:
+  build:
+    # Build arm64 natively on GitHub's arm runners rather than under QEMU; a
+    # Rust release build under emulation takes most of an hour.
+    runs-on: ${{ vars.PLATFORM == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { name: gateway, context: gateway, dockerfile: gateway/Dockerfile, cmd: "" }
+          - { name: hub, context: services/go, dockerfile: services/go/Dockerfile, cmd: hub }
+          - { name: buckt, context: services/go, dockerfile: services/go/Dockerfile, cmd: buckt }
+          - { name: loom, context: services/go, dockerfile: services/go/Dockerfile, cmd: loom }
+          - { name: ussd, context: services/ussd, dockerfile: services/ussd/Dockerfile, cmd: "" }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lowercase registry
+        run: echo "REGISTRY=${REGISTRY,,}" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ vars.PLATFORM || 'linux/amd64' }}
+          build-args: ${{ matrix.cmd && format('CMD={0}', matrix.cmd) || '' }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ matrix.name }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ matrix.name }}:latest
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment: production
+    env:
+      DEPLOY_DIR: ${{ vars.DEPLOY_DIR || '/opt/demo' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lowercase registry
+        run: echo "REGISTRY=${REGISTRY,,}" >> "$GITHUB_ENV"
+
+      - name: Configure SSH
+        run: |
+          install -m 700 -d ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          echo "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          cat >> ~/.ssh/config <<EOF
+          Host demo
+            HostName ${{ secrets.DEPLOY_HOST }}
+            User ${{ secrets.DEPLOY_USER }}
+            IdentityFile ~/.ssh/id_deploy
+            StrictHostKeyChecking yes
+          EOF
+
+      - name: Ship compose file and Makefile
+        run: |
+          ssh demo "mkdir -p '$DEPLOY_DIR/certs'"
+          scp docker-compose.yml Makefile "demo:$DEPLOY_DIR/"
+
+      - name: Pull and restart
+        run: |
+          # The job's token can read this repo's packages; it expires with the
+          # job, so nothing long-lived is left on the server.
+          echo "${{ secrets.GITHUB_TOKEN }}" | ssh demo "docker login ghcr.io -u '${{ github.actor }}' --password-stdin"
+          ssh demo "cd '$DEPLOY_DIR' && export REGISTRY='$REGISTRY' TAG='${{ github.sha }}' \
+            && docker compose pull --quiet \
+            && docker compose up -d --remove-orphans \
+            && docker image prune -f >/dev/null \
+            && docker logout ghcr.io >/dev/null"
+
+      - name: Smoke test
+        env:
+          DOMAIN: ${{ vars.DEMO_DOMAIN || 'api.rhaqim.com' }}
+        run: |
+          # Hit Caddy on the box itself (-k: the origin cert is only trusted by Cloudflare).
+          for path in api/health api/ussd/health api/buckt/health api/loom/health; do
+            ok=""
+            for i in $(seq 1 15); do
+              if ssh demo "curl -fsSk --resolve $DOMAIN:443:127.0.0.1 https://$DOMAIN/$path" >/dev/null 2>&1; then ok=1; break; fi
+              sleep 4
+            done
+            [ -n "$ok" ] || { echo "::error::$path did not come up"; ssh demo "cd '$DEPLOY_DIR' && docker compose ps && docker compose logs --tail 40"; exit 1; }
+            echo "✓ $path"
+          done

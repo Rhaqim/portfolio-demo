@@ -1,0 +1,9 @@
+.env
+certs/*
+!certs/.gitkeep
+data/
+services/ussd/target/
+services/go/hub
+services/go/buckt
+services/go/loom
+.DS_Store
