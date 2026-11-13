@@ -89,6 +89,26 @@ func (d *dryRun) reply(ctx context.Context, req loom.GenerateRequest) string {
 		}
 		b, _ := json.Marshal(out)
 		return string(b)
+	case "fd-oddsmaker":
+		card, _ := req.Inputs["Card"].(string)
+		odds, _ := req.Inputs["Odds"].(string)
+		first, _, _ := strings.Cut(card, "\n")
+		return fmt.Sprintf("(Dry run: no model was called.) %s. On paper the home side has the edge, but recent form muddies it, "+
+			"and one match is a coin with a weight on it, not a certainty. The desk prices it %s. Add an API key to hear a real host.", first, odds)
+	case "fd-value":
+		return `{"pick": "home", "probabilities": {"home": 0.52, "draw": 0.26, "away": 0.22}, "reason": "Dry run: the home side's attack outweighs the price."}`
+	case "fd-contrarian":
+		return `{"pick": "away", "probabilities": {"home": 0.38, "draw": 0.27, "away": 0.35}, "reason": "Dry run: the desk is overrating home advantage."}`
+	case "fd-bankroll":
+		// Deliberately over the contrarian's limit on the first try, so the dry
+		// run shows the risk referee rejecting it and the retry resizing.
+		if strings.Contains(req.SystemPrompt, "risk referee rejected") {
+			return `{"value": {"stake": 40, "note": "Dry run: quarter-Kelly on a modest edge."}, "contrarian": {"stake": 60, "note": "Dry run: resized under the cap."}}`
+		}
+		return `{"value": {"stake": 40, "note": "Dry run: quarter-Kelly on a modest edge."}, "contrarian": {"stake": 250, "note": "Dry run: far too keen."}}`
+	case "fd-commentator":
+		res, _ := req.Inputs["Result"].(string)
+		return fmt.Sprintf("(Dry run) Full time: %s. Somebody read that right and somebody will be rewinding it.", res)
 	case "tt-npc":
 		n, _ := req.Inputs["NpcName"].(string)
 		return fmt.Sprintf("(Dry run) %s looks you over and says, \"Not here. Not with the tide coming in.\"", n)

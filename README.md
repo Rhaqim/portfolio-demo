@@ -10,6 +10,7 @@ from the browser, running on one Hetzner box behind Cloudflare.
 | `/demo/ussd` | `/api/ussd/*` | `services/ussd`: ussdframework behind actix | Rust |
 | `/demo/buckt` | `/api/buckt/*` | `services/go/cmd/buckt`: per-visitor buckt sandboxes | Go |
 | `/demo/loom` | `/api/loom/*` | `services/go/cmd/loom`: multiplayer tabletop + agent pipeline | Go |
+| `/demo/forecast` | `/api/loom/desk/*` | `services/go/cmd/loom`: the Forecast Desk | Go |
 | every page | `/api/feedback` | `services/go/cmd/hub`: the feedback form | Go |
 
 ```
@@ -83,10 +84,21 @@ Built on loom v0.0.3's shared-session features.
 **Agent pipeline.** A visitor-editable incident-postmortem graph; loom
 validates the wiring and plans it into parallel layers.
 
+**Forecast Desk.** A fictional eight-team league with play chips (`desk.go`,
+`desk_sim.go`). Matches are decided in Go from a seed, with odds from a Poisson
+model plus a 6% margin. One loom turn per match: the odds-maker streams a
+preview, the value hunter and contrarian pick in parallel, and the bankroll
+manager (planned into the next layer because it reads both picks) sizes their
+stakes. A post-hook, the risk referee, rejects an over-limit stake once with
+`ErrRetryWith` (the reason goes into the retry's prompt) and trims it on the
+retry. Settlement is a recorded step, so "What if?" forks before any matchday
+and replays it: same seed, same score, different bets. The backtest runs the
+strategies as plain Go over up to 500 seeded matches, no model calls.
+
 The *Client asks for loom* doc records what the demo needed from loom; v0.0.3
 delivered all of it, and the demo's workarounds are gone. loom's GC runs with
 retention rules: pipeline sessions are purged after 48 idle hours, tabletop
-sessions after 8 days.
+sessions after 8 days, Forecast Desk sessions after 7.
 
 ## Layout
 
@@ -95,7 +107,8 @@ gateway/            Caddyfile (production, CORS), Caddyfile.local, Dockerfile
 services/go/        one Go module; internal/platform is shared plumbing
   cmd/hub           feedback API
   cmd/buckt         buckt sandbox API
-  cmd/loom          engine, tabletop (game.go, rpg.go), pipeline, dry-run generator, key check
+  cmd/loom          engine, tabletop (game.go, rpg.go), Forecast Desk (desk.go, desk_sim.go),
+                    pipeline, dry-run generator, key check
 services/ussd/      Rust/actix front for ussdframework; menu.json is QuickLoan
 docker-compose.yml  production stack (pulls images CI built)
 docker-compose.local.yml  local overrides: API on http://localhost:8080

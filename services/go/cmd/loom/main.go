@@ -144,6 +144,10 @@ func main() {
 		panic(err)
 	}
 	s.registerGameHooks()
+	if err := s.seedDesk(ctx); err != nil {
+		panic(err)
+	}
+	s.registerDeskHooks()
 	go s.gameJanitor()
 	gcCtx, stopGC := context.WithCancel(context.Background())
 	go e.GC().Run(gcCtx)
@@ -173,6 +177,13 @@ func main() {
 	mux.HandleFunc("POST "+G+"/key", verifies.Limit(s.setGameKey))
 	mux.HandleFunc("POST "+G+"/end", acts.Limit(s.endGame))
 
+	desk := platform.NewLimiter(120, time.Hour)
+	mux.HandleFunc("POST /api/loom/desk", creates.Limit(s.deskStart))
+	mux.HandleFunc("GET /api/loom/desk/backtest", desk.Limit(s.deskBacktest))
+	mux.HandleFunc("GET /api/loom/desk/{id}", s.deskGet)
+	mux.HandleFunc("POST /api/loom/desk/{id}/play", s.runs.Limit(s.deskPlay))
+	mux.HandleFunc("POST /api/loom/desk/{id}/rewind", desk.Limit(s.deskRewind))
+
 	mux.HandleFunc("GET /api/loom/pipeline/preset", s.pipelinePreset)
 	mux.HandleFunc("POST /api/loom/pipeline/plan", s.pipelinePlan)
 	mux.HandleFunc("POST /api/loom/pipeline/run", s.runs.Limit(s.pipelineRun))
@@ -195,6 +206,7 @@ func gcConfig() *loom.BranchGCConfig {
 	c.Retention = []loom.RetentionRule{
 		{Name: "pipeline-runs", Tags: []string{"pipeline"}, MaxIdle: 48 * time.Hour, Action: loom.RetentionPurge},
 		{Name: "tabletop-games", Tags: []string{"tabletop"}, MaxIdle: 8 * 24 * time.Hour, Action: loom.RetentionPurge},
+		{Name: "forecast-desks", Tags: []string{"forecast"}, MaxIdle: 7 * 24 * time.Hour, Action: loom.RetentionPurge},
 	}
 	return &c
 }
