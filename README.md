@@ -1,9 +1,9 @@
 # Demo API (api.rhaqim.com)
 
 The backend for the live demos on rhaqim.com. The **pages** live in the
-portfolio (`src/pages/demo/*`, scripts in `src/scripts/demo/`); this stack is
-only the **API** they call from the browser, running on one Hetzner box
-behind Cloudflare.
+portfolio repo (`src/pages/demo/*`, scripts in `src/scripts/demo/`, expected
+as a sibling folder: `../portfolio`); this repo is only the **API** they call
+from the browser, running on one Hetzner box behind Cloudflare.
 
 | Page on rhaqim.com | API prefix | Service | Language |
 |---|---|---|---|
@@ -121,12 +121,12 @@ docker-compose.local.yml  local overrides: API on http://localhost:8080
 ## Run it locally
 
 ```bash
-# 1. The API
-docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
-# 2. The pages (in the portfolio repo)
-echo 'PUBLIC_DEMO_API=http://localhost:8080' > .env && npm run dev
+make up      # the API on http://localhost:8080
+make site    # the portfolio from ../portfolio, pointed at the local API
 open http://localhost:4321/demo
 ```
+
+`make site` takes `PORTFOLIO_DIR=...` if the portfolio is somewhere else.
 
 The local Caddyfile allows any `http://localhost:*` origin. Without a key,
 loom runs as a dry run: the orchestration, hooks, forks, budgets and ledger
@@ -154,8 +154,9 @@ multiplayer game with yourself.
 6. **GitHub.** Add the secrets and variables listed at the top of
    `.github/workflows/deploy.yml` and an environment called `production`. Hetzner
    CAX (Arm) boxes need the variable `PLATFORM=linux/arm64`. Push to `main`.
-7. **Turn the pages on.** In the portfolio, set `demo.live = true` in
-   `src/data/site.ts`: the "Try it" links and the Demos nav entry appear.
+7. **Links.** The portfolio links into the demos while `demo.live` is `true`
+   in its `src/data/site.ts` (the default). Set it to `false` to hide every link
+   if the API will be down for a while.
 
 ## Operating it
 

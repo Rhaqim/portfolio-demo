@@ -1,6 +1,6 @@
 # Demo API: common commands. `make` (or `make help`) lists them.
 #
-# Local:   make up          then, in the portfolio, `make site`
+# Local:   make up          then `make site` (runs ../portfolio against it)
 # Checks:  make check       (formatting, vet, tests, configs)
 # Server:  make server-up TAG=<sha>   (run from /opt/demo on the Hetzner box)
 
@@ -12,8 +12,8 @@ LOCAL         := $(COMPOSE) -f docker-compose.yml -f docker-compose.local.yml
 GO_DIR        := services/go
 USSD_DIR      := services/ussd
 CADDY_IMAGE   := caddy:2.10-alpine
-# Where the portfolio lives, for `make site` (one level up while demo/ sits inside it).
-PORTFOLIO_DIR ?= ..
+# Where the portfolio repo lives, for `make site` (a sibling folder by default).
+PORTFOLIO_DIR ?= ../portfolio
 # Base URL for `make feedback` and `make health`.
 API           ?= https://api.rhaqim.com
 # Native runs keep their database and media here.
