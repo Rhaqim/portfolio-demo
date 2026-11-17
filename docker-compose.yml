@@ -21,13 +21,16 @@ services:
     ports: ["80:80", "443:443"]
     environment:
       DEMO_DOMAIN: ${DEMO_DOMAIN:-api.rhaqim.com}
+      # The Binary House's own API host, with its own cert (certs/tbh-origin*.pem).
+      TBH_DOMAIN: ${TBH_DOMAIN:-api.thebinaryhouse.studio}
       # Regex of page origins allowed to call the API with the visitor cookie.
       CORS_ORIGINS: ${CORS_ORIGINS:-^https://(www\.)?rhaqim\.com$}
+      TBH_CORS_ORIGINS: ${TBH_CORS_ORIGINS:-^https://(www\.)?thebinaryhouse\.studio$}
     volumes:
       - ./certs:/certs:ro
       - caddy_data:/data
       - caddy_config:/config
-    depends_on: [hub, ussd, buckt, loom]
+    depends_on: [hub, ussd, buckt, loom, laundryflow]
     mem_limit: 128m
 
   hub:
@@ -60,6 +63,19 @@ services:
       OPENAI_MODELS: ${OPENAI_MODELS:-gpt-5-mini,gpt-5}
     volumes: [demo_data:/data]
     mem_limit: 256m
+
+  laundryflow:
+    # Served on api.thebinaryhouse.studio only. Built by CI from the private
+    # Rhaqim/laundryflow repo (its own Dockerfile); the demo is the sandbox
+    # binary in that image. In memory only: no volume, nothing survives a
+    # restart.
+    <<: *service
+    image: ${REGISTRY:-ghcr.io/rhaqim/demo}/laundryflow:${TAG:-latest}
+    entrypoint: [/usr/local/bin/sandbox]
+    environment:
+      SANDBOX_IDLE: ${LAUNDRYFLOW_IDLE:-30m}
+      SANDBOX_MAX: ${LAUNDRYFLOW_MAX:-400}
+    mem_limit: 128m
 
   ussd:
     <<: *service

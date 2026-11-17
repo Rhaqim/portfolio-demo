@@ -12,3 +12,7 @@ services:
   buckt: { image: demo-local/buckt }
   loom: { image: demo-local/loom }
   ussd: { image: demo-local/ussd }
+  # The laundryflow repo checked out next to this one (override with LAUNDRYFLOW_DIR).
+  laundryflow:
+    image: demo-local/laundryflow
+    build: { context: "${LAUNDRYFLOW_DIR:-../binaryhouse/flow/laundryflow}" }

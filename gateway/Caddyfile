@@ -1,10 +1,17 @@
-# api.rhaqim.com: the demo services' API. The pages live on rhaqim.com and
-# call this host from the browser, so it answers CORS for the portfolio only.
+# One gateway, two separate API hosts on this box:
 #
-# Cloudflare sits in front (proxied DNS, SSL mode "Full (strict)"). Caddy
-# serves a Cloudflare Origin Certificate from /certs, so there is no ACME
-# dance through the proxy, and browsers that reach the origin directly get a
-# certificate they don't trust. See README.md, "Server setup".
+#   api.rhaqim.com              the portfolio demos; pages on rhaqim.com
+#   api.thebinaryhouse.studio   The Binary House demos (LaundryFlow); pages on
+#                               thebinaryhouse.studio
+#
+# Each host has its own certificate, its own allowed origins and only its own
+# routes, so neither site's pages can call the other's services.
+#
+# Cloudflare sits in front of both (proxied DNS, SSL mode "Full (strict)" in
+# each zone). Caddy serves a Cloudflare Origin Certificate per host from
+# /certs, so there is no ACME dance through the proxy, and browsers that reach
+# the origin directly get a certificate they don't trust. See README.md,
+# "Server setup".
 {
 	servers {
 		# Caddy passes CF-Connecting-IP through untouched and the services rate
@@ -14,9 +21,9 @@
 	}
 }
 
+# CORS for the pages allowed to call a host. {args[0]} is the origin regex.
 (cors) {
-	# Pages on these origins may call the API with the visitor's cookie.
-	@cors_origin header_regexp Origin {$CORS_ORIGINS:^https://(www\.)?rhaqim\.com$}
+	@cors_origin header_regexp Origin {args[0]}
 	header @cors_origin {
 		Access-Control-Allow-Origin "{http.request.header.Origin}"
 		Access-Control-Allow-Credentials "true"
@@ -24,17 +31,44 @@
 	}
 	@preflight {
 		method OPTIONS
-		header_regexp Origin {$CORS_ORIGINS:^https://(www\.)?rhaqim\.com$}
+		header_regexp Origin {args[0]}
 	}
 	handle @preflight {
 		header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
-		header Access-Control-Allow-Headers "Content-Type, X-LLM-Key, X-LLM-Model, Last-Event-ID"
+		header Access-Control-Allow-Headers "Authorization, Content-Type, X-LLM-Key, X-LLM-Model, Last-Event-ID"
 		header Access-Control-Max-Age "600"
 		respond 204
 	}
 }
 
-(routes) {
+(hardening) {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				# The loom demo sends visitors' LLM keys in this header, and the
+				# LaundryFlow demo its sandbox token in Authorization. Never log them.
+				request>headers>X-Llm-Key delete
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+			}
+		}
+	}
+}
+
+{$DEMO_DOMAIN:api.rhaqim.com} {
+	tls /certs/origin.pem /certs/origin-key.pem
+	import hardening
+	import cors {$CORS_ORIGINS:^https://(www\.)?rhaqim\.com$}
+
 	# Uploads get a little over buckt's 5 MB file cap; everything else is small.
 	@upload path /api/buckt/files
 	request_body @upload {
@@ -66,28 +100,22 @@
 	}
 }
 
-{$DEMO_DOMAIN:api.rhaqim.com} {
-	tls /certs/origin.pem /certs/origin-key.pem
-	encode zstd gzip
-	header {
-		Strict-Transport-Security "max-age=31536000"
-		X-Content-Type-Options "nosniff"
-		Referrer-Policy "strict-origin-when-cross-origin"
-		-Server
-	}
-	import cors
-	import routes
+{$TBH_DOMAIN:api.thebinaryhouse.studio} {
+	tls /certs/tbh-origin.pem /certs/tbh-origin-key.pem
+	import hardening
+	import cors {$TBH_CORS_ORIGINS:^https://(www\.)?thebinaryhouse\.studio$}
 
-	log {
-		output stdout
-		format filter {
-			wrap json
-			fields {
-				# The loom demo sends visitors' LLM keys in this header. Never log it.
-				request>headers>X-Llm-Key delete
-				request>headers>Cookie delete
-				request>headers>Authorization delete
-			}
-		}
+	request_body {
+		max_size 16KB
+	}
+
+	handle /api/laundryflow/* {
+		# Per-visitor sandboxes of the LaundryFlow engine, in memory. The page
+		# is on another site, so it sends its sandbox token as Authorization
+		# (dropped from the log above) rather than a cookie.
+		reverse_proxy laundryflow:8080
+	}
+	handle {
+		respond "Not found" 404
 	}
 }
