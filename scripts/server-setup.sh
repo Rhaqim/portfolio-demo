@@ -16,6 +16,8 @@
 #
 # Options:
 #   --domain HOST          API hostname (default: DEMO_DOMAIN in .env, else api.rhaqim.com)
+#   --tbh-domain HOST      The Binary House API hostname (default: TBH_DOMAIN in .env,
+#                          else api.thebinaryhouse.studio); it has its own certificate
 #   --build                build the images on this box instead of pulling them
 #   --deploy-user NAME     create/prepare the SSH user CI deploys as (docker group)
 #   --deploy-key "KEY"     public key to authorise for that user
@@ -33,6 +35,7 @@ PROJECT_DIR="$(pwd)"
 # Options
 # ----------------------------------------------------------------------------
 DOMAIN=""
+TBH_DOMAIN=""
 FORCE_BUILD=0
 WANT_FIREWALL=1
 WANT_SWAP=1
@@ -44,13 +47,14 @@ TAG="${TAG:-latest}"
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--domain) DOMAIN="${2:-}"; shift ;;
+	--tbh-domain) TBH_DOMAIN="${2:-}"; shift ;;
 	--build) FORCE_BUILD=1 ;;
 	--deploy-user) DEPLOY_USER="${2:-}"; shift ;;
 	--deploy-key) DEPLOY_KEY="${2:-}"; shift ;;
 	--no-firewall) WANT_FIREWALL=0 ;;
 	--no-swap) WANT_SWAP=0 ;;
 	-h | --help)
-		sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+		sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
 		exit 0
 		;;
 	*)
@@ -178,6 +182,10 @@ fi
 [ -n "$DOMAIN" ] || DOMAIN="api.rhaqim.com"
 env_set DEMO_DOMAIN "$DOMAIN"
 ok "domain: $DOMAIN"
+[ -n "$TBH_DOMAIN" ] || TBH_DOMAIN="$(env_get TBH_DOMAIN)"
+[ -n "$TBH_DOMAIN" ] || TBH_DOMAIN="api.thebinaryhouse.studio"
+env_set TBH_DOMAIN "$TBH_DOMAIN"
+ok "The Binary House domain: $TBH_DOMAIN"
 
 chmod 600 .env
 ok ".env permissions set to 600"
@@ -185,10 +193,9 @@ ok ".env permissions set to 600"
 # ----------------------------------------------------------------------------
 # 4. Cloudflare origin certificate
 # ----------------------------------------------------------------------------
-# Caddy serves this cert; Cloudflare (SSL mode "Full (strict)") trusts it.
-step "Checking the origin certificate"
-CERT=certs/origin.pem
-KEY=certs/origin-key.pem
+# Caddy serves one cert per API host; Cloudflare (SSL mode "Full (strict)" in
+# each zone) trusts them. Caddy will not start while any of them is missing.
+step "Checking the origin certificates"
 mkdir -p certs
 
 # Read one PEM block from the terminal into $1.
@@ -205,28 +212,35 @@ paste_pem() {
 	mv "$dest.tmp" "$dest"
 }
 
-if [ ! -s "$CERT" ] || [ ! -s "$KEY" ]; then
-	if [ ! -t 0 ]; then
-		fail "missing $CERT and/or $KEY"
-		info "Cloudflare → SSL/TLS → Origin Server → Create certificate for $DOMAIN,"
-		info "save them to $PROJECT_DIR/$CERT and $PROJECT_DIR/$KEY, then re-run."
-		exit 1
+# install_cert CERT KEY HOST: ask for the pair if missing, then check it.
+install_cert() {
+	local cert="$1" key="$2" host="$3"
+	if [ ! -s "$cert" ] || [ ! -s "$key" ]; then
+		if [ ! -t 0 ]; then
+			fail "missing $cert and/or $key"
+			info "Cloudflare (the zone for $host) → SSL/TLS → Origin Server → Create certificate for $host,"
+			info "save them to $PROJECT_DIR/$cert and $PROJECT_DIR/$key, then re-run."
+			exit 1
+		fi
+		info "Cloudflare (the zone for $host) → SSL/TLS → Origin Server → Create certificate (RSA or ECC, hostname $host)."
+		(
+			umask 077
+			[ -s "$cert" ] || paste_pem "$cert" "Origin Certificate for $host"
+			[ -s "$key" ] || paste_pem "$key" "Private Key for $host"
+		)
 	fi
-	info "Cloudflare → SSL/TLS → Origin Server → Create certificate (RSA or ECC, hostname $DOMAIN)."
-	(
-		umask 077
-		[ -s "$CERT" ] || paste_pem "$CERT" "Origin Certificate"
-		[ -s "$KEY" ] || paste_pem "$KEY" "Private Key"
-	)
-fi
-chmod 600 "$CERT" "$KEY"
+	chmod 600 "$cert" "$key"
 
-openssl x509 -noout -in "$CERT" 2>/dev/null || die "$CERT is not a valid certificate — delete it and re-run"
-if [ "$(openssl x509 -noout -pubkey -in "$CERT" 2>/dev/null)" != "$(openssl pkey -pubout -in "$KEY" 2>/dev/null)" ]; then
-	die "$KEY does not match $CERT — delete both and re-run"
-fi
-ok "certificate and key present and matching (expires $(openssl x509 -noout -enddate -in "$CERT" | cut -d= -f2))"
-openssl x509 -noout -checkend 2592000 -in "$CERT" >/dev/null || warn "the certificate expires within 30 days"
+	openssl x509 -noout -in "$cert" 2>/dev/null || die "$cert is not a valid certificate — delete it and re-run"
+	if [ "$(openssl x509 -noout -pubkey -in "$cert" 2>/dev/null)" != "$(openssl pkey -pubout -in "$key" 2>/dev/null)" ]; then
+		die "$key does not match $cert — delete both and re-run"
+	fi
+	ok "$host: certificate and key present and matching (expires $(openssl x509 -noout -enddate -in "$cert" | cut -d= -f2))"
+	openssl x509 -noout -checkend 2592000 -in "$cert" >/dev/null || warn "the $host certificate expires within 30 days"
+}
+
+install_cert certs/origin.pem certs/origin-key.pem "$DOMAIN"
+install_cert certs/tbh-origin.pem certs/tbh-origin-key.pem "$TBH_DOMAIN"
 
 # ----------------------------------------------------------------------------
 # 5. Swap (compiling Rust/Go on a small box needs it)
@@ -400,14 +414,15 @@ ok "containers started"
 # ----------------------------------------------------------------------------
 step "Verifying services"
 HEALTHY=1
-for path in api/health api/ussd/health api/buckt/health api/loom/health; do
+for url in "$DOMAIN/api/health" "$DOMAIN/api/ussd/health" "$DOMAIN/api/buckt/health" "$DOMAIN/api/loom/health" "$TBH_DOMAIN/api/laundryflow/health"; do
+	host="${url%%/*}"
 	tries=20
-	until curl -fsSk --max-time 3 --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/$path" >/dev/null 2>&1; do
+	until curl -fsSk --max-time 3 --resolve "$host:443:127.0.0.1" "https://$url" >/dev/null 2>&1; do
 		tries=$((tries - 1))
 		[ "$tries" -gt 0 ] || break
 		sleep 3
 	done
-	if [ "$tries" -gt 0 ]; then ok "/$path"; else fail "/$path did not come up"; HEALTHY=0; fi
+	if [ "$tries" -gt 0 ]; then ok "$url"; else fail "$url did not come up"; HEALTHY=0; fi
 done
 [ "$HEALTHY" -eq 1 ] || { dc ps; info "logs: docker compose logs --tail 50 <service>"; }
 
@@ -426,6 +441,8 @@ printf '%s───────────────────────�
 
 printf '  API:          %shttps://%s%s   (Cloudflare DNS: %sapi%s → %s, proxied)\n' \
 	"$BOLD" "$DOMAIN" "$RESET" "$BOLD" "$RESET" "${PUBLIC_IP:-<server ip>}"
+printf '  TBH API:      %shttps://%s%s   (its own zone: %sapi%s → %s, proxied, SSL Full (strict))\n' \
+	"$BOLD" "$TBH_DOMAIN" "$RESET" "$BOLD" "$RESET" "${PUBLIC_IP:-<server ip>}"
 if [ -n "$GENERATED_TOKEN" ]; then
 	printf '  ADMIN_TOKEN:  %s%s%s   %s<- for reading feedback; stored in .env%s\n' "$BOLD" "$GENERATED_TOKEN" "$RESET" "$DIM" "$RESET"
 fi

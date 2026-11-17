@@ -14,8 +14,11 @@ USSD_DIR      := services/ussd
 CADDY_IMAGE   := caddy:2.10-alpine
 # Where the portfolio repo lives, for `make site` (a sibling folder by default).
 PORTFOLIO_DIR ?= ../portfolio
+# The LaundryFlow repo, for `make run-laundryflow` and the local image.
+LAUNDRYFLOW_DIR ?= ../binaryhouse/flow/laundryflow
 # Base URL for `make feedback` and `make health`.
 API           ?= https://api.rhaqim.com
+TBH_API       ?= https://api.thebinaryhouse.studio
 # Native runs keep their database and media here.
 DATA_DIR      ?= ./data
 
@@ -36,7 +39,7 @@ down: ## Stop the local stack (data volume is kept)
 
 .PHONY: restart
 restart: ## Rebuild and restart one service: make restart s=loom
-	@test -n "$(s)" || { echo "usage: make restart s=<gateway|hub|buckt|loom|ussd>"; exit 1; }
+	@test -n "$(s)" || { echo "usage: make restart s=<gateway|hub|buckt|loom|ussd|laundryflow>"; exit 1; }
 	$(LOCAL) up --build -d $(s)
 
 .PHONY: logs
@@ -56,7 +59,7 @@ reset: ## Stop the local stack AND delete its data (games, sandboxes, feedback)
 site: ## Run the portfolio dev server against the local API
 	cd $(PORTFOLIO_DIR) && PUBLIC_DEMO_API=http://localhost:8080 npm run dev
 
-##@ Native runs (no Docker; one terminal each, API ports 8081-8084)
+##@ Native runs (no Docker; one terminal each, API ports 8081-8085)
 
 $(DATA_DIR):
 	@mkdir -p $(DATA_DIR)
@@ -72,6 +75,10 @@ run-buckt: $(DATA_DIR) ## Run the buckt sandbox service on :8081
 .PHONY: run-loom
 run-loom: $(DATA_DIR) ## Run the loom service on :8082
 	cd $(GO_DIR) && DEMO_DB=$(abspath $(DATA_DIR))/demo.db ADDR=127.0.0.1:8082 go run ./cmd/loom
+
+.PHONY: run-laundryflow
+run-laundryflow: ## Run the LaundryFlow sandbox on :8085 (from LAUNDRYFLOW_DIR)
+	cd $(LAUNDRYFLOW_DIR) && ADDR=127.0.0.1:8085 go run ./cmd/sandbox
 
 .PHONY: run-ussd
 run-ussd: ## Run the USSD service on :8083
@@ -167,11 +174,13 @@ backup: ## Snapshot demo.db with SQLite's backup into ./backups/
 ##@ Operations
 
 .PHONY: health
-health: ## Check every service through the gateway (API=... to target another host)
+health: ## Check every service through the gateway (API=..., TBH_API=... to target other hosts)
 	@for p in api/health api/ussd/health api/buckt/health api/loom/health; do \
 		code=$$(curl -s -o /dev/null -w '%{http_code}' $(API)/$$p); \
-		printf "  %-20s %s\n" $$p $$code; \
+		printf "  %-24s %s\n" $$p $$code; \
 	done
+	@code=$$(curl -s -o /dev/null -w '%{http_code}' $(TBH_API)/api/laundryflow/health); \
+		printf "  %-24s %s  (%s)\n" api/laundryflow/health $$code $(TBH_API)
 
 .PHONY: feedback
 feedback: ## Read the latest feedback (needs ADMIN_TOKEN in the environment)

@@ -1,6 +1,7 @@
-# Demo API (api.rhaqim.com)
+# Demo API (api.rhaqim.com, api.thebinaryhouse.studio)
 
-The backend for the live demos on rhaqim.com. The **pages** live in the
+The backend for the live demos on rhaqim.com, and for The Binary House's
+LaundryFlow demo on thebinaryhouse.studio, which has an API host of its own. The **pages** live in the
 portfolio repo (`src/pages/demo/*`, scripts in `src/scripts/demo/`, expected
 as a sibling folder: `../portfolio`); this repo is only the **API** they call
 from the browser, running on one Hetzner box behind Cloudflare.
@@ -11,6 +12,7 @@ from the browser, running on one Hetzner box behind Cloudflare.
 | `/demo/buckt` | `/api/buckt/*` | `services/go/cmd/buckt`: per-visitor buckt sandboxes | Go |
 | `/demo/loom` | `/api/loom/*` | `services/go/cmd/loom`: multiplayer tabletop + agent pipeline | Go |
 | `/demo/forecast` | `/api/loom/desk/*` | `services/go/cmd/loom`: the Forecast Desk | Go |
+| thebinaryhouse.studio`/laundryflow` | api.thebinaryhouse.studio `/api/laundryflow/*` | `laundryflow`: per-visitor sandboxes, built from the private [laundryflow](https://github.com/Rhaqim/laundryflow) repo | Go |
 | every page | `/api/feedback` | `services/go/cmd/hub`: the feedback form | Go |
 
 ```
@@ -38,6 +40,17 @@ origins but the same site, so the visitor cookie (`demo_vid`, HttpOnly,
 Secure, SameSite=Lax, set by the API) travels with `credentials: "include"`
 requests and with `<img>` loads of buckt files. Caddy answers CORS only for
 origins matching `CORS_ORIGINS` (default `^https://(www\.)?rhaqim\.com$`).
+
+**Two hosts, kept apart.** The Binary House is a separate entity, so its demo
+has its own host, `api.thebinaryhouse.studio` (`TBH_DOMAIN`), on the same box
+and gateway. It has its own Cloudflare zone and origin certificate, allows
+only `TBH_CORS_ORIGINS` (default thebinaryhouse.studio, with or without
+`www`), and routes nothing but `/api/laundryflow/*`. api.rhaqim.com does not
+route LaundryFlow at all. The page sends its sandbox token as `Authorization:
+Bearer …` rather than relying on a cookie; Caddy strips that header from its
+logs. Sandboxes live in
+the service's memory (30 idle minutes, at most 400 at once, 15 new ones per IP
+per 10 minutes) and nothing is written to `demo.db`.
 
 **One SQLite file.** Hub, buckt and loom share `demo.db`: one host, WAL mode,
 10-second busy timeout, and each service prefixes its tables (buckt via
@@ -110,6 +123,8 @@ services/go/        one Go module; internal/platform is shared plumbing
   cmd/loom          engine, tabletop (game.go, rpg.go), Forecast Desk (desk.go, desk_sim.go),
                     pipeline, dry-run generator, key check
 services/ussd/      Rust/actix front for ussdframework; menu.json is QuickLoan
+                    (laundryflow has no directory here: CI checks out its repo
+                    and builds its Dockerfile; locally, ../binaryhouse/flow/laundryflow)
 docker-compose.yml  production stack (pulls images CI built)
 docker-compose.local.yml  local overrides: API on http://localhost:8080
 .github/workflows/deploy.yml  build → push to GHCR → deploy over SSH → smoke test
@@ -125,7 +140,7 @@ docker-compose.local.yml  local overrides: API on http://localhost:8080
 | `make site` | Run the portfolio dev server against the local API |
 | `make logs s=loom` | Follow one service's logs |
 | `make check` | Formatting, `go vet`, Go and Rust tests, Caddyfile and compose validation |
-| `make run-loom` (etc.) | Run one service natively, no Docker |
+| `make run-loom` (etc.) | Run one service natively, no Docker (`make run-laundryflow` needs the laundryflow repo, see `LAUNDRYFLOW_DIR`) |
 | `make bump-loom v=v0.0.4` | Move to a new loom release |
 | `make server-up TAG=<sha>` | On the box: pull and start a given build |
 | `make backup` | On the box: snapshot `demo.db` into `./backups/` |
@@ -166,11 +181,18 @@ steps below describe what the script does.
 1. **Docker.** Install Docker Engine and the compose plugin. Create a deploy
    user in the `docker` group, and `sudo mkdir -p /opt/demo/certs && sudo chown deploy /opt/demo`.
 2. **DNS.** In Cloudflare, add `api` → the server IP, **proxied** (orange
-   cloud). SSL/TLS mode **Full (strict)**. Cloudflare keeps SSE open as long as
+   cloud), in **both** zones: rhaqim.com and thebinaryhouse.studio. SSL/TLS
+   mode **Full (strict)** in each zone. Cloudflare keeps SSE open as long as
    bytes flow; the game stream sends a keep-alive every 20 s.
-3. **Origin certificate.** Cloudflare → SSL/TLS → Origin Server → Create
-   certificate for `api.rhaqim.com`. Save it as `/opt/demo/certs/origin.pem`
-   and the key as `/opt/demo/certs/origin-key.pem` (`chmod 600`).
+3. **Origin certificates, one per host.** In each zone: SSL/TLS → Origin
+   Server → Create certificate.
+   - `api.rhaqim.com` → `/opt/demo/certs/origin.pem` and `origin-key.pem`
+   - `api.thebinaryhouse.studio` → `/opt/demo/certs/tbh-origin.pem` and
+     `tbh-origin-key.pem`
+
+   `chmod 600` all four. Caddy will not start while any of them is missing,
+   which would take both hosts down, so CI checks for all four before it
+   restarts anything. The setup script asks for any that are missing.
 4. **Firewall.** Allow SSH, and 80/443 **only from Cloudflare**. The services
    rate-limit on `CF-Connecting-IP`, which anyone who reaches the box directly
    could forge. Hetzner's Cloud Firewall with Cloudflare's ranges
@@ -180,7 +202,14 @@ steps below describe what the script does.
    (`openssl rand -hex 32`). If the portfolio is served from another origin
    (a Pages preview domain), widen `CORS_ORIGINS`.
 6. **GitHub.** Add the secrets and variables listed at the top of
-   `.github/workflows/deploy.yml` and an environment called `production`. Hetzner
+   `.github/workflows/deploy.yml` and an environment called `production`.
+   `LAUNDRYFLOW_DEPLOY_KEY` lets CI check out the private laundryflow repo:
+   run `ssh-keygen -t ed25519 -N "" -C portfolio-demo-ci -f lf_deploy`, add
+   `lf_deploy.pub` under laundryflow → Settings → Deploy keys (leave *Allow
+   write access* off), and paste `lf_deploy` as the secret here. Without it
+   the laundryflow build fails. A push to
+   laundryflow does not redeploy by itself: run this workflow by hand
+   (*Run workflow*) to pick it up, or set `LAUNDRYFLOW_REF` to pin a version. Hetzner
    CAX (Arm) boxes need the variable `PLATFORM=linux/arm64`. Push to `main`.
 7. **Links.** The portfolio links into the demos while `demo.live` is `true`
    in its `src/data/site.ts` (the default). Set it to `false` to hide every link
