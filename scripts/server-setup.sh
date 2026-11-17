@@ -189,6 +189,14 @@ ok "The Binary House domain: $TBH_DOMAIN"
 
 chmod 600 .env
 ok ".env permissions set to 600"
+# CI deploys as the user that owns docker-compose.yml (see --deploy-user), and
+# compose reads .env on every pull and restart, so that user must own it. A
+# re-run as root must not quietly take it back.
+ENV_OWNER="${DEPLOY_USER:-$(stat -c %U docker-compose.yml 2>/dev/null || echo root)}"
+if [ "$ENV_OWNER" != root ] && id "$ENV_OWNER" >/dev/null 2>&1; then
+	$SUDO chown "$ENV_OWNER" .env
+	ok ".env owned by $ENV_OWNER (the deploy user)"
+fi
 
 # ----------------------------------------------------------------------------
 # 4. Cloudflare origin certificate
@@ -367,9 +375,9 @@ if [ -n "$DEPLOY_USER" ]; then
 	id "$DEPLOY_USER" >/dev/null 2>&1 || { $SUDO useradd -m -s /bin/bash "$DEPLOY_USER" && ok "created user"; }
 	$SUDO usermod -aG docker "$DEPLOY_USER"
 	ok "in the docker group"
-	# CI copies these two files in on each deploy.
-	$SUDO chown "$DEPLOY_USER" docker-compose.yml Makefile
-	ok "can update docker-compose.yml and Makefile"
+	# CI copies these two files in on each deploy, and compose reads .env.
+	$SUDO chown "$DEPLOY_USER" docker-compose.yml Makefile .env
+	ok "can update docker-compose.yml and Makefile, and read .env"
 	if [ -n "$DEPLOY_KEY" ]; then
 		HOME_DIR="$(getent passwd "$DEPLOY_USER" | cut -d: -f6)"
 		$SUDO install -d -m 700 -o "$DEPLOY_USER" "$HOME_DIR/.ssh"
