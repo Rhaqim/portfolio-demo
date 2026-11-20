@@ -75,6 +75,11 @@ services:
     environment:
       SANDBOX_IDLE: ${LAUNDRYFLOW_IDLE:-30m}
       SANDBOX_MAX: ${LAUNDRYFLOW_MAX:-400}
+      # Messages the rules cannot read are interpreted by Claude Haiku when
+      # this is "on" and ANTHROPIC_API_KEY is set; capped per hour.
+      SANDBOX_INTERPRET: ${LAUNDRYFLOW_INTERPRET:-off}
+      SANDBOX_INTERPRET_PER_HOUR: ${LAUNDRYFLOW_INTERPRET_PER_HOUR:-600}
+      ANTHROPIC_API_KEY: ${LAUNDRYFLOW_ANTHROPIC_API_KEY:-}
     mem_limit: 128m
 
   ussd:

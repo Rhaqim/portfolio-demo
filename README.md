@@ -50,7 +50,12 @@ route LaundryFlow at all. The page sends its sandbox token as `Authorization:
 Bearer …` rather than relying on a cookie; Caddy strips that header from its
 logs. Sandboxes live in
 the service's memory (30 idle minutes, at most 400 at once, 15 new ones per IP
-per 10 minutes) and nothing is written to `demo.db`.
+per 10 minutes) and nothing is written to `demo.db`. With
+`LAUNDRYFLOW_INTERPRET=on` and `LAUNDRYFLOW_ANTHROPIC_API_KEY` set in `.env`,
+messages the rules cannot read are interpreted by Claude Haiku: at most
+`LAUNDRYFLOW_INTERPRET_PER_HOUR` calls an hour across all sandboxes (default
+600) and 40 per sandbox a day. The key is the demo's own; give it a spending
+limit in the Claude Console.
 
 **One SQLite file.** Hub, buckt and loom share `demo.db`: one host, WAL mode,
 10-second busy timeout, and each service prefixes its tables (buckt via
