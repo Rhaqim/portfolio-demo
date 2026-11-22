@@ -1,17 +1,17 @@
 // Command loom is the loom demo. Visitors bring their own LLM API key and run
-// two multi-agent apps on a real loom engine:
+// two multi-agent apps on a real Noewright engine:
 //
 //   - Tabletop: a solo tabletop RPG. A rules agent decides whether an action
-//     needs a dice check, Go rolls the dice, then one loom turn runs a
+//     needs a dice check, Go rolls the dice, then one Noewright turn runs a
 //     streaming game-master lead with three followers (referee, chronicler,
 //     suggester) in parallel. Hooks fold the referee's verdict into typed
 //     session state, so any turn can be rewound with a session fork.
 //   - Pipeline: a visitor-editable agent graph (an incident postmortem by
-//     default). loom validates the wiring, plans it into dependency layers
+//     default). Noewright validates the wiring, plans it into dependency layers
 //     and runs each layer concurrently.
 //
 // Keys travel per request in a header, are handed to the generator through
-// StepRequest.Overrides, and are never written anywhere: loom persists only
+// StepRequest.Overrides, and are never written anywhere: Noewright persists only
 // the rendered prompts, never Overrides.
 package main
 
@@ -29,10 +29,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	loom "github.com/rhaqim/loom"
-	"github.com/rhaqim/loom/generator/anthropic"
-	"github.com/rhaqim/loom/generator/openai"
-	"github.com/rhaqim/loom/schema"
+	"github.com/rhaqim/noewright"
+	"github.com/rhaqim/noewright/generator/anthropic"
+	"github.com/rhaqim/noewright/generator/openai"
+	"github.com/rhaqim/noewright/schema"
 
 	"github.com/rhaqim/demo/internal/platform"
 )
@@ -51,7 +51,7 @@ func (m model) slug() string { return m.Provider + "/" + m.ID }
 
 type server struct {
 	db      *sql.DB
-	e       *loom.Engine
+	e       *noewright.Engine
 	models  map[string]model // by slug
 	ordered []model
 
@@ -108,8 +108,8 @@ func main() {
 	}
 
 	dry := &dryRun{}
-	gens := map[string]loom.Generator{dryRunSlug: dry}
-	pricing := map[string]loom.ModelPrice{}
+	gens := map[string]noewright.Generator{dryRunSlug: dry}
+	pricing := map[string]noewright.ModelPrice{}
 	for _, m := range s.ordered {
 		// Generators are built with no key. The visitor's key arrives per
 		// request in Overrides["api_key"]; base_url overrides stay disabled,
@@ -121,16 +121,16 @@ func main() {
 			gens[m.slug()] = openai.NewChatGenerator("", m.ID)
 		}
 		if m.In > 0 {
-			pricing[m.ID] = loom.ModelPrice{InputPer1M: m.In, OutputPer1M: m.Out}
+			pricing[m.ID] = noewright.ModelPrice{InputPer1M: m.In, OutputPer1M: m.Out}
 		}
 	}
 
-	e, err := loom.New(loom.Config{
+	e, err := noewright.New(noewright.Config{
 		DB:         db,
-		Dialect:    loom.DialectSQLite,
+		Dialect:    noewright.DialectSQLite,
 		Generators: gens,
 		Pricing:    pricing,
-		Cache:      loom.NewInProcessCache(),
+		Cache:      noewright.NewInProcessCache(),
 		MaxRetries: 1,
 		BranchGC:   gcConfig(),
 	})
@@ -197,16 +197,16 @@ func main() {
 	})
 }
 
-// gcConfig turns on loom's GC with retention rules for a public demo:
+// gcConfig turns on Noewright's GC with retention rules for a public demo:
 // pipeline runs are scratch, games outlive their 7-day table rows by a day.
-func gcConfig() *loom.BranchGCConfig {
-	c := loom.DefaultBranchGCConfig()
+func gcConfig() *noewright.BranchGCConfig {
+	c := noewright.DefaultBranchGCConfig()
 	c.DryRun = false
 	c.RunInterval = 6 * time.Hour
-	c.Retention = []loom.RetentionRule{
-		{Name: "pipeline-runs", Tags: []string{"pipeline"}, MaxIdle: 48 * time.Hour, Action: loom.RetentionPurge},
-		{Name: "tabletop-games", Tags: []string{"tabletop"}, MaxIdle: 8 * 24 * time.Hour, Action: loom.RetentionPurge},
-		{Name: "forecast-desks", Tags: []string{"forecast"}, MaxIdle: 7 * 24 * time.Hour, Action: loom.RetentionPurge},
+	c.Retention = []noewright.RetentionRule{
+		{Name: "pipeline-runs", Tags: []string{"pipeline"}, MaxIdle: 48 * time.Hour, Action: noewright.RetentionPurge},
+		{Name: "tabletop-games", Tags: []string{"tabletop"}, MaxIdle: 8 * 24 * time.Hour, Action: noewright.RetentionPurge},
+		{Name: "forecast-desks", Tags: []string{"forecast"}, MaxIdle: 7 * 24 * time.Hour, Action: noewright.RetentionPurge},
 	}
 	return &c
 }
@@ -281,7 +281,7 @@ func (s *server) acquire(vid string) (func(), error) {
 	return func() { <-s.slots; s.busy.Delete(vid) }, nil
 }
 
-// ensureBudget gives each visitor a daily step budget, enforced by loom
+// ensureBudget gives each visitor a daily step budget, enforced by Noewright
 // itself. It caps load on this server; the visitor's key pays for tokens.
 func (s *server) ensureBudget(ctx context.Context, vid string) error {
 	s.budgetsMu.Lock()
@@ -289,17 +289,17 @@ func (s *server) ensureBudget(ctx context.Context, vid string) error {
 	if s.budgeted[vid] {
 		return nil
 	}
-	existing, err := s.e.Budgets().List(ctx, loom.TargetPlatformID, vid)
+	existing, err := s.e.Budgets().List(ctx, noewright.TargetPlatformID, vid)
 	if err != nil {
 		return err
 	}
 	if len(existing) == 0 {
-		if err := s.e.Budgets().Create(ctx, &loom.Budget{
+		if err := s.e.Budgets().Create(ctx, &noewright.Budget{
 			Name:     "demo-daily-steps",
-			Target:   loom.BudgetTarget{Kind: loom.TargetPlatformID, Key: vid},
-			Window:   loom.BudgetWindowDay,
-			Limit:    loom.BudgetLimit{Steps: stepsPerDay},
-			OnExceed: loom.BudgetBlock,
+			Target:   noewright.BudgetTarget{Kind: noewright.TargetPlatformID, Key: vid},
+			Window:   noewright.BudgetWindowDay,
+			Limit:    noewright.BudgetLimit{Steps: stepsPerDay},
+			OnExceed: noewright.BudgetBlock,
 			Active:   true,
 		}); err != nil {
 			return err
@@ -359,20 +359,20 @@ func (st *stream) comment(text string) {
 	st.f.Flush()
 }
 
-// fail reports a run error as an event, translating loom's typed errors into
+// fail reports a run error as an event, translating Noewright's typed errors into
 // something a visitor can act on.
 func (st *stream) fail(err error) {
 	st.send("error", map[string]string{"message": explain(err)})
 }
 
 func explain(err error) string {
-	var be *loom.BudgetExceededError
-	var ge *loom.GenerationError
+	var be *noewright.BudgetExceededError
+	var ge *noewright.GenerationError
 	switch {
 	case errors.As(err, &be):
-		return fmt.Sprintf("You've used today's %d demo steps (loom's budget guard). It resets %s.",
+		return fmt.Sprintf("You've used today's %d demo steps (Noewright's budget guard). It resets %s.",
 			stepsPerDay, be.ResetsAt.UTC().Format("15:04 UTC"))
-	case errors.As(err, &ge) && ge.Kind == loom.GenerationRejected:
+	case errors.As(err, &ge) && ge.Kind == noewright.GenerationRejected:
 		return "The model declined that request (a safety refusal). Try a different action."
 	case errors.As(err, &ge):
 		msg := ge.Error()
@@ -418,8 +418,8 @@ type stepView struct {
 	Error      string  `json:"error,omitempty"`
 }
 
-func (s *server) viewStep(ctx context.Context, role string, st *loom.Step) stepView {
-	v := stepView{Role: role, Index: st.Index, Output: loom.ResultText(st.Result), DurationMs: st.DurationMs}
+func (s *server) viewStep(ctx context.Context, role string, st *noewright.Step) stepView {
+	v := stepView{Role: role, Index: st.Index, Output: noewright.ResultText(st.Result), DurationMs: st.DurationMs}
 	if a, err := s.e.Agents().GetByID(ctx, st.AgentID); err == nil {
 		v.Agent = a.Slug
 	}
@@ -431,10 +431,10 @@ func (s *server) viewStep(ctx context.Context, role string, st *loom.Step) stepV
 	return v
 }
 
-// costs indexes loom's per-step cost ledger for a session. Cost rows commit
+// costs indexes Noewright's per-step cost ledger for a session. Cost rows commit
 // in the same transaction as their step, so they are readable immediately.
-func (s *server) costs(ctx context.Context, sessionID uuid.UUID) map[uuid.UUID]loom.StepUsage {
-	out := map[uuid.UUID]loom.StepUsage{}
+func (s *server) costs(ctx context.Context, sessionID uuid.UUID) map[uuid.UUID]noewright.StepUsage {
+	out := map[uuid.UUID]noewright.StepUsage{}
 	rows, err := s.e.Cost().ByStep(ctx, sessionID)
 	if err != nil {
 		return out
@@ -445,12 +445,12 @@ func (s *server) costs(ctx context.Context, sessionID uuid.UUID) map[uuid.UUID]l
 	return out
 }
 
-func applyCost(v *stepView, st *loom.Step, ledger map[uuid.UUID]loom.StepUsage) {
+func applyCost(v *stepView, st *noewright.Step, ledger map[uuid.UUID]noewright.StepUsage) {
 	if c, ok := ledger[st.ID]; ok {
 		v.InTokens, v.OutTokens = c.InputTokens, c.OutputTokens
 		v.Priced = !c.Estimated
 		if v.Priced {
-			// Unpriced rows carry loom's placeholder rate; never show that as money.
+			// Unpriced rows carry Noewright's placeholder rate; never show that as money.
 			v.USD = c.USDCost
 		}
 	}

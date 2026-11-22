@@ -10,7 +10,7 @@ from the browser, running on one Hetzner box behind Cloudflare.
 |---|---|---|---|
 | `/demo/ussd` | `/api/ussd/*` | `services/ussd`: ussdframework behind actix | Rust |
 | `/demo/buckt` | `/api/buckt/*` | `services/go/cmd/buckt`: per-visitor buckt sandboxes | Go |
-| `/demo/loom` | `/api/loom/*` | `services/go/cmd/loom`: multiplayer tabletop + agent pipeline | Go |
+| `/demo/noewright` | `/api/loom/*` | `services/go/cmd/loom`: multiplayer tabletop + agent pipeline | Go |
 | `/demo/forecast` | `/api/loom/desk/*` | `services/go/cmd/loom`: the Forecast Desk | Go |
 | thebinaryhouse.studio`/laundryflow` | api.thebinaryhouse.studio `/api/laundryflow/*` | `laundryflow`: per-visitor sandboxes, built from the private [laundryflow](https://github.com/Rhaqim/laundryflow) repo | Go |
 | every page | `/api/feedback` | `services/go/cmd/hub`: the feedback form | Go |
@@ -59,52 +59,56 @@ limit in the Claude Console.
 
 **One SQLite file.** Hub, buckt and loom share `demo.db`: one host, WAL mode,
 10-second busy timeout, and each service prefixes its tables (buckt via
-`WithTablePrefix("buckt_")`, loom's `loom_`, `demo_` for the rest).
+`WithTablePrefix("buckt_")`, Noewright's default `loom_`, `demo_` for the rest).
 
-## The loom demo
+## The Noewright demo
+
+The `loom` service (`cmd/loom`, `/api/loom/*`) runs on
+[Noewright](https://github.com/rhaqim/noewright), formerly loom. The service
+and its routes kept the old name; its tables keep Noewright's default `loom_` prefix.
 
 **Multiplayer tabletop.** A host writes the world and up to four NPCs,
 chooses an AI game master or runs the table themselves, and shares a
-six-character code (or the invite link `rhaqim.com/demo/loom?game=CODE`).
+six-character code (or the invite link `rhaqim.com/demo/noewright?game=CODE`; old `/demo/loom?game=` links still forward).
 Up to six players join from their own browsers; everyone watches over SSE.
-Built on loom v0.0.3's shared-session features.
+Built on the shared-session features that arrived in loom v0.0.3.
 
 - *AI game master:* each round, a rules agent decides who needs a check, Go
-  rolls the d20s, then one loom turn streams the GM's narration to every
+  rolls the d20s, then one Noewright turn streams the GM's narration to every
   player while a referee, chronicler and suggester run in parallel.
 - *Human game master:* the host narrates; their text is the recorded lead of
-  the same loom turn (`TurnRequest.LeadResult`, authored by the host, no
+  the same Noewright turn (`TurnRequest.LeadResult`, authored by the host, no
   generator, no cost) and, with bookkeeping on, the same three AI followers
   keep the books. The host can call for checks, adjust sheets, and
   make NPCs speak (one agent, persona injected as a literal system prompt).
-- *Players are loom participants* (`AddParticipant`, roles `player` / `dm`).
+- *Players are Noewright participants* (`AddParticipant`, roles `player` / `dm`).
   Joins and DM adjustments are recorded steps (`RecordStep`); every change to
   the party is a step whose post-hook edits typed state in `State.Snapshot`,
   so the host can rewind to the end of any round with `Sessions().Fork`.
-- *Live view:* each player's stream forwards loom's `Engine.Subscribe` events
+- *Live view:* each player's stream forwards Noewright's `Engine.Subscribe` events
   (`step.started`, `chunk`, `step.done`) for the game's session, and
   resubscribes when a rewind forks a new one. App events (actions, dice,
   costs) come from the game's feed table, which late joiners replay.
 - *Effort:* the GM runs at `medium`, the bookkeeping agents at `low`
   (`output_config.effort` through the Anthropic adapter).
-- *Cost:* each round's cost per agent and per turn comes from loom's ledger,
+- *Cost:* each round's cost per agent and per turn comes from Noewright's ledger,
   priced for the host's model; the game total and a per-round chart sit beside
-  the story. Before creating a game, "Check key & price" runs loom's
+  the story. Before creating a game, "Check key & price" runs Noewright's
   `VerifyGenerator` (the provider's models endpoint, free) and prices an
   estimate with `Cost().Estimate`.
 - *The host's key* is kept in process memory for that game only (6-hour
   sliding expiry, dropped when the game ends), never in SQLite or logs. Every AI
   step at the table uses it. After a server restart the host re-enters it.
-- *Limits:* 400 agent steps per game per day (a loom budget on
+- *Limits:* 400 agent steps per game per day (a Noewright budget on
   `PlatformID = game:<code>`), 6 players, 10 games created per IP per hour,
   40 wrong codes per IP per hour.
 
-**Agent pipeline.** A visitor-editable incident-postmortem graph; loom
+**Agent pipeline.** A visitor-editable incident-postmortem graph; Noewright
 validates the wiring and plans it into parallel layers.
 
 **Forecast Desk.** A fictional eight-team league with play chips (`desk.go`,
 `desk_sim.go`). Matches are decided in Go from a seed, with odds from a Poisson
-model plus a 6% margin. One loom turn per match: the odds-maker streams a
+model plus a 6% margin. One Noewright turn per match: the odds-maker streams a
 preview, the value hunter and contrarian pick in parallel, and the bankroll
 manager (planned into the next layer because it reads both picks) sizes their
 stakes. A post-hook, the risk referee, rejects an over-limit stake once with
@@ -114,7 +118,7 @@ and replays it: same seed, same score, different bets. The backtest runs the
 strategies as plain Go over up to 500 seeded matches, no model calls.
 
 The *Client asks for loom* doc records what the demo needed from loom; v0.0.3
-delivered all of it, and the demo's workarounds are gone. loom's GC runs with
+delivered all of it, and the demo's workarounds are gone. Noewright's GC runs with
 retention rules: pipeline sessions are purged after 48 idle hours, tabletop
 sessions after 8 days, Forecast Desk sessions after 7.
 
@@ -146,7 +150,7 @@ docker-compose.local.yml  local overrides: API on http://localhost:8080
 | `make logs s=loom` | Follow one service's logs |
 | `make check` | Formatting, `go vet`, Go and Rust tests, Caddyfile and compose validation |
 | `make run-loom` (etc.) | Run one service natively, no Docker (`make run-laundryflow` needs the laundryflow repo, see `LAUNDRYFLOW_DIR`) |
-| `make bump-loom v=v0.0.4` | Move to a new loom release |
+| `make bump-noewright v=v0.1.1` | Move to a new Noewright release |
 | `make server-up TAG=<sha>` | On the box: pull and start a given build |
 | `make backup` | On the box: snapshot `demo.db` into `./backups/` |
 | `make feedback` | Read the latest feedback (needs `ADMIN_TOKEN`) |
@@ -162,7 +166,7 @@ open http://localhost:4321/demo
 `make site` takes `PORTFOLIO_DIR=...` if the portfolio is somewhere else.
 
 The local Caddyfile allows any `http://localhost:*` origin. Without a key,
-loom runs as a dry run: the orchestration, hooks, forks, budgets and ledger
+the Noewright demo runs as a dry run: the orchestration, hooks, forks, budgets and ledger
 are real; only the model text is canned. Open two browser profiles to play a
 multiplayer game with yourself.
 
@@ -258,12 +262,12 @@ replay what they missed from the feed.
 ## Safety notes
 
 - **Visitor isolation.** buckt's lookups by ID aren't owner-scoped, so every
-  handler checks ownership. loom pipeline agents live under
+  handler checks ownership. Noewright pipeline agents live under
   `owner = visitor:<id>`. Game actions check host or player membership; codes
   are 6 characters from a 31-letter alphabet (~887 million) behind a
   wrong-code limiter.
 - **LLM keys.** Sent in `X-LLM-Key`, passed to generators through
-  `StepRequest.Overrides`, which loom never persists. Per-request `base_url`
+  `StepRequest.Overrides`, which Noewright never persists. Per-request `base_url`
   overrides stay disabled, so a key can't be redirected. Provider errors are
   scrubbed of anything key-shaped. Hosts' keys live in memory only.
 - **Abuse limits.** Per-IP rate limits everywhere, one pipeline run per
@@ -280,7 +284,7 @@ replay what they missed from the feed.
 - **ussdframework** pinned at `a12ae3c`: logs through the `log` facade (this
   service installs no logger, so nothing about a session is printed) and shows
   a menu error once.
-- **loom** `v0.0.3`. Its Anthropic adapter is now a separate module,
-  `github.com/rhaqim/loom/generator/anthropic`, which has no tag yet, so
-  `go.mod` pins it to a pseudo-version. Once `generator/anthropic/v0.0.3` is
-  tagged, run `go get github.com/rhaqim/loom/generator/anthropic@v0.0.3`.
+- **Noewright** `v0.1.0` (`github.com/rhaqim/noewright`, formerly
+  `github.com/rhaqim/loom`), with its Anthropic adapter at
+  `github.com/rhaqim/noewright/generator/anthropic` `v0.1.0`. Both are tagged,
+  so `make bump-noewright v=<version>` moves them together.

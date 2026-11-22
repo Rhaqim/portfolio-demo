@@ -10,14 +10,14 @@ import (
 	"text/template"
 	"time"
 
-	loom "github.com/rhaqim/loom"
+	"github.com/rhaqim/noewright"
 
 	"github.com/rhaqim/demo/internal/platform"
 )
 
 // A visitor-defined agent graph. The first agent is the lead; everything else
 // is a follower. Dependencies are never declared by hand: they come from the
-// {{.Inputs.X}} references in each template, and loom turns those into
+// {{.Inputs.X}} references in each template, and Noewright turns those into
 // execution layers.
 type pipelineDef struct {
 	InputName string    `json:"input_name"`
@@ -74,21 +74,21 @@ func (d *pipelineDef) check() error {
 	return nil
 }
 
-// owner scopes every registry record to the visitor: loom resolves agent
+// owner scopes every registry record to the visitor: Noewright resolves agent
 // slugs inside the owner, so two visitors' "triage" agents never meet.
 func owner(r *http.Request) string { return "visitor:" + platform.Visitor(r) }
 
 // record registers (or reuses) each agent under the visitor's owner and
 // returns the flow wiring. It is not persisted: Validate and Plan work on an
 // unsaved record, and RunTurn takes the flow directly.
-func (s *server) record(ctx context.Context, own string, d pipelineDef) (*loom.FlowRecord, error) {
-	rec := &loom.FlowRecord{Owner: own, Slug: "pipeline", Version: 1, IsActive: true, Inputs: []string{d.InputName}}
+func (s *server) record(ctx context.Context, own string, d pipelineDef) (*noewright.FlowRecord, error) {
+	rec := &noewright.FlowRecord{Owner: own, Slug: "pipeline", Version: 1, IsActive: true, Inputs: []string{d.InputName}}
 	for i, a := range d.Agents {
 		ag, err := s.upsertAgent(ctx, own, "pipeline", a.Slug, dryRunSlug, a.System, a.Template)
 		if err != nil {
 			return nil, err
 		}
-		rec.Agents = append(rec.Agents, loom.FlowAgentEntry{
+		rec.Agents = append(rec.Agents, noewright.FlowAgentEntry{
 			Position: i, AgentSlug: a.Slug, AgentVersion: ag.Version, OutputKey: a.OutputKey, Stream: i == 0,
 		})
 	}
@@ -104,7 +104,7 @@ type planView struct {
 	Cyclic []string `json:"cyclic"`
 }
 
-func (s *server) plan(ctx context.Context, rec *loom.FlowRecord) (planView, error) {
+func (s *server) plan(ctx context.Context, rec *noewright.FlowRecord) (planView, error) {
 	p, err := s.e.Flows().Plan(ctx, rec)
 	if err != nil {
 		return planView{}, err
@@ -193,7 +193,7 @@ func (s *server) pipelineRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess := &loom.Session{PlatformID: vid, Tags: []string{"pipeline"}, State: loom.State{Modality: loom.ModalityText}}
+	sess := &noewright.Session{PlatformID: vid, Tags: []string{"pipeline"}, State: noewright.State{Modality: noewright.ModalityText}}
 	if err := s.e.Sessions().Create(ctx, sess); err != nil {
 		platform.Error(w, http.StatusInternalServerError, "couldn't start a session")
 		return
@@ -214,14 +214,14 @@ func (s *server) pipelineRun(w http.ResponseWriter, r *http.Request) {
 	st.send("session", map[string]any{"session_id": sess.ID, "dry_run": run.dry, "model": run.model.Label})
 
 	started := time.Now()
-	turn, err := s.e.RunTurn(ctx, sess, loom.TurnRequest{
+	turn, err := s.e.RunTurn(ctx, sess, noewright.TurnRequest{
 		Owner:  own,
 		Flow:   flow,
 		Inputs: map[string]any{d.InputName: d.Input},
-		OnChunk: func(c loom.Chunk) {
+		OnChunk: func(c noewright.Chunk) {
 			st.send("chunk", map[string]string{"agent": flow.Lead.AgentSlug, "text": c.Content})
 		},
-		OnStep: func(role string, step *loom.Step, err error) {
+		OnStep: func(role string, step *noewright.Step, err error) {
 			if err != nil || step == nil {
 				st.send("step", stepView{Role: role, Agent: strings.TrimPrefix(role, "follower:"), Error: explain(err)})
 				return

@@ -66,7 +66,7 @@ func Visitor(r *http.Request) string {
 
 // WithVisitor gives every request a stable anonymous visitor ID, kept in an
 // HttpOnly cookie shared across the demo subdomain. It is the sandbox key:
-// buckt user IDs, loom owners and platform IDs are all derived from it, so
+// buckt user IDs, Noewright owners and platform IDs are all derived from it, so
 // one visitor can never see another's files or sessions.
 func WithVisitor(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

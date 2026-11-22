@@ -11,7 +11,7 @@ import (
 	"slices"
 	"strings"
 
-	loom "github.com/rhaqim/loom"
+	"github.com/rhaqim/noewright"
 )
 
 // Rules shared by every tabletop game: character sheets, archetypes, dice,
@@ -223,9 +223,9 @@ func check(sh sheet, ability string, dc int, reason string) roll {
 var inputRef = regexp.MustCompile(`\{\{\s*\.Inputs\.([A-Za-z_][A-Za-z0-9_]*)`)
 
 // upsertAgent makes sure the latest version of slug under owner has exactly
-// these prompts and generator. Agents and prompts are immutable in loom, so a
+// these prompts and generator. Agents and prompts are immutable in Noewright, so a
 // change is a new version; an unchanged definition reuses the existing one.
-func (s *server) upsertAgent(ctx context.Context, owner, category, slug, generator, system, template string) (*loom.Agent, error) {
+func (s *server) upsertAgent(ctx context.Context, owner, category, slug, generator, system, template string) (*noewright.Agent, error) {
 	vars := []string{}
 	for _, m := range inputRef.FindAllStringSubmatch(template, -1) {
 		if !slices.Contains(vars, m[1]) {
@@ -241,7 +241,7 @@ func (s *server) upsertAgent(ctx context.Context, owner, category, slug, generat
 			return cur, nil
 		}
 		version = cur.Version + 1
-	} else if !errors.Is(err, loom.ErrNotFound) {
+	} else if !errors.Is(err, noewright.ErrNotFound) {
 		return nil, err
 	}
 
@@ -251,17 +251,17 @@ func (s *server) upsertAgent(ctx context.Context, owner, category, slug, generat
 		}
 		return 1
 	}
-	sys := &loom.Prompt{Slug: slug + "-system", Owner: owner, Version: promptVersion(slug + "-system"),
-		Kind: loom.PromptKindSystem, Category: category, Body: system}
+	sys := &noewright.Prompt{Slug: slug + "-system", Owner: owner, Version: promptVersion(slug + "-system"),
+		Kind: noewright.PromptKindSystem, Category: category, Body: system}
 	if err := s.e.Prompts().Create(ctx, sys); err != nil {
 		return nil, err
 	}
-	usr := &loom.Prompt{Slug: slug + "-user", Owner: owner, Version: promptVersion(slug + "-user"),
-		Kind: loom.PromptKindUserTemplate, Category: category, Body: template, Variables: vars}
+	usr := &noewright.Prompt{Slug: slug + "-user", Owner: owner, Version: promptVersion(slug + "-user"),
+		Kind: noewright.PromptKindUserTemplate, Category: category, Body: template, Variables: vars}
 	if err := s.e.Prompts().Create(ctx, usr); err != nil {
 		return nil, err
 	}
-	a := &loom.Agent{Slug: slug, Owner: owner, Version: version, Category: category, Modal: loom.ModalityText,
+	a := &noewright.Agent{Slug: slug, Owner: owner, Version: version, Category: category, Modal: noewright.ModalityText,
 		GeneratorSlug: generator, SystemPromptID: sys.ID, UserTemplateID: usr.ID}
 	if err := s.e.Agents().Create(ctx, a); err != nil {
 		return nil, err

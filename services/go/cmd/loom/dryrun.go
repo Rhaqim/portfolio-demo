@@ -7,47 +7,47 @@ import (
 	"strings"
 	"time"
 
-	loom "github.com/rhaqim/loom"
+	"github.com/rhaqim/noewright"
 )
 
-// dryRun is a loom Generator used when a visitor has not supplied a key. The
+// dryRun is a Noewright Generator used when a visitor has not supplied a key. The
 // engine, hooks, layering, budgets and cost ledger all run for real; only the
 // model text is canned. For visitor-built pipelines it echoes the rendered
 // prompt, which makes the data flow between agents visible.
-type dryRun struct{ e *loom.Engine }
+type dryRun struct{ e *noewright.Engine }
 
-var _ loom.StreamingGenerator = (*dryRun)(nil)
+var _ noewright.StreamingGenerator = (*dryRun)(nil)
 
-func (d *dryRun) Modality() loom.Modality { return loom.ModalityText }
+func (d *dryRun) Modality() noewright.Modality { return noewright.ModalityText }
 
-func (d *dryRun) Generate(ctx context.Context, req loom.GenerateRequest) (loom.Result, error) {
+func (d *dryRun) Generate(ctx context.Context, req noewright.GenerateRequest) (noewright.Result, error) {
 	text := d.reply(ctx, req)
 	time.Sleep(250 * time.Millisecond) // long enough to see layers run in parallel
-	return loom.NewTextResult(text, "stop", len(req.SystemPrompt+req.UserPrompt)/4, len(text)/4), nil
+	return noewright.NewTextResult(text, "stop", len(req.SystemPrompt+req.UserPrompt)/4, len(text)/4), nil
 }
 
-func (d *dryRun) GenerateStream(ctx context.Context, req loom.GenerateRequest) (<-chan loom.Chunk, <-chan loom.Result, error) {
+func (d *dryRun) GenerateStream(ctx context.Context, req noewright.GenerateRequest) (<-chan noewright.Chunk, <-chan noewright.Result, error) {
 	text := d.reply(ctx, req)
-	chunks := make(chan loom.Chunk, 64)
-	results := make(chan loom.Result, 1)
+	chunks := make(chan noewright.Chunk, 64)
+	results := make(chan noewright.Result, 1)
 	go func() {
 		defer close(chunks)
 		defer close(results)
 		for _, word := range strings.SplitAfter(text, " ") {
 			select {
 			case <-ctx.Done():
-				results <- loom.NewFailedResult(loom.ModalityText, ctx.Err())
+				results <- noewright.NewFailedResult(noewright.ModalityText, ctx.Err())
 				return
-			case chunks <- loom.Chunk{Content: word}:
+			case chunks <- noewright.Chunk{Content: word}:
 				time.Sleep(18 * time.Millisecond)
 			}
 		}
-		results <- loom.NewTextResult(text, "stop", len(req.SystemPrompt+req.UserPrompt)/4, len(text)/4)
+		results <- noewright.NewTextResult(text, "stop", len(req.SystemPrompt+req.UserPrompt)/4, len(text)/4)
 	}()
 	return chunks, results, nil
 }
 
-func (d *dryRun) reply(ctx context.Context, req loom.GenerateRequest) string {
+func (d *dryRun) reply(ctx context.Context, req noewright.GenerateRequest) string {
 	slug := ""
 	if a, err := d.e.Agents().GetByID(ctx, req.AgentID); err == nil {
 		slug = a.Slug

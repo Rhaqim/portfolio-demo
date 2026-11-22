@@ -133,12 +133,10 @@ build: ## Build every image locally (same Dockerfiles CI uses)
 
 ##@ Dependencies
 
-.PHONY: bump-loom
-bump-loom: ## Move to a loom release: make bump-loom v=v0.0.4
-	@test -n "$(v)" || { echo "usage: make bump-loom v=<version>"; exit 1; }
-	cd $(GO_DIR) && go get github.com/rhaqim/loom@$(v) \
-		&& (go get github.com/rhaqim/loom/generator/anthropic@$(v) 2>/dev/null \
-			|| { echo "no generator/anthropic/$(v) tag; using main"; go get github.com/rhaqim/loom/generator/anthropic@main; }) \
+.PHONY: bump-noewright
+bump-noewright: ## Move to a Noewright release (formerly loom): make bump-noewright v=v0.1.1
+	@test -n "$(v)" || { echo "usage: make bump-noewright v=<version>"; exit 1; }
+	cd $(GO_DIR) && go get github.com/rhaqim/noewright@$(v) github.com/rhaqim/noewright/generator/anthropic@$(v) \
 		&& go mod tidy && go build ./...
 
 .PHONY: bump-ussd

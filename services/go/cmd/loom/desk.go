@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	loom "github.com/rhaqim/loom"
+	"github.com/rhaqim/noewright"
 
 	"github.com/rhaqim/demo/internal/platform"
 )
@@ -21,10 +21,10 @@ import (
 // The Forecast Desk. A visitor plays a fictional league against two AI
 // forecasters whose stakes a third agent manages and a hook polices.
 //
-// One loom turn per match:
+// One Noewright turn per match:
 //   lead      fd-oddsmaker  streams a preview of the card and what the odds imply
 //   layer 1   fd-value, fd-contrarian   pick in parallel (each reads the preview)
-//   layer 2   fd-bankroll   sizes both stakes (reads both picks, so loom plans it after them)
+//   layer 2   fd-bankroll   sizes both stakes (reads both picks, so Noewright plans it after them)
 //   hook      risk referee  on fd-bankroll: an over-limit stake sends it back with the
 //                           reason (ErrRetryWith); a second breach is trimmed
 // then Go settles the match from its seed (a recorded step, so it is checkpointed)
@@ -59,7 +59,7 @@ type deskState struct {
 
 var deskBettors = []string{"you", "value", "contrarian"}
 
-func loadDesk(st *loom.State) deskState {
+func loadDesk(st *noewright.State) deskState {
 	var d deskState
 	_ = json.Unmarshal(st.Snapshot, &d)
 	if d.Chips == nil {
@@ -68,7 +68,7 @@ func loadDesk(st *loom.State) deskState {
 	return d
 }
 
-func saveDesk(st *loom.State, d deskState) {
+func saveDesk(st *noewright.State, d deskState) {
 	b, _ := json.Marshal(d)
 	st.Snapshot = b
 }
@@ -160,7 +160,7 @@ func (p agentPick) valid() string {
 }
 
 func (s *server) registerDeskHooks() {
-	s.e.Hooks().RegisterPost("desk-state", func(_ context.Context, req *loom.StepRequest, res loom.Result) (loom.Result, error) {
+	s.e.Hooks().RegisterPost("desk-state", func(_ context.Context, req *noewright.StepRequest, res noewright.Result) (noewright.Result, error) {
 		if req.Session == nil || !strings.HasPrefix(req.AgentSlug, "fd-") {
 			return res, nil
 		}
@@ -203,14 +203,14 @@ func (s *server) registerDeskHooks() {
 }
 
 // riskReferee polices the bankroll manager. The first over-limit stake sends
-// the step back with the reason, which loom folds into the retry's prompt;
+// the step back with the reason, which Noewright folds into the retry's prompt;
 // on the retry anything still over the limit is trimmed and noted.
-func (s *server) riskReferee(req *loom.StepRequest, res loom.Result, st *loom.State, d deskState) (loom.Result, error) {
+func (s *server) riskReferee(req *noewright.StepRequest, res noewright.Result, st *noewright.State, d deskState) (noewright.Result, error) {
 	var stakes map[string]struct {
 		Stake int    `json:"stake"`
 		Note  string `json:"note"`
 	}
-	_ = extractJSON(loom.ResultText(res), &stakes)
+	_ = extractJSON(noewright.ResultText(res), &stakes)
 	picks := map[string]agentPick{}
 	for who, key := range map[string]string{"value": "ValuePick", "contrarian": "ContrarianPick"} {
 		var p agentPick
@@ -252,7 +252,7 @@ func (s *server) riskReferee(req *loom.StepRequest, res loom.Result, st *loom.St
 	if len(breaches) > 0 {
 		// The engine records this attempt, then retries with the reason
 		// appended to the system prompt.
-		return nil, loom.ErrRetryWith(loom.RetryAnnotation{Reason: "The risk referee rejected these stakes: " + strings.Join(breaches, "; ") + ". Resize within the limits."})
+		return nil, noewright.ErrRetryWith(noewright.RetryAnnotation{Reason: "The risk referee rejected these stakes: " + strings.Join(breaches, "; ") + ". Resize within the limits."})
 	}
 	if req.Attempt() > 0 && len(notes) == 0 {
 		notes = append(notes, "The bankroll manager resized within the limits after the referee's first rejection.")
@@ -277,7 +277,7 @@ type deskView struct {
 	Seed      string         `json:"seed"`
 }
 
-func (s *server) deskView(sess *loom.Session) deskView {
+func (s *server) deskView(sess *noewright.Session) deskView {
 	d := loadDesk(&sess.State)
 	id, _ := sess.State.Vars["desk_id"].(string)
 	if d.History == nil {
@@ -298,8 +298,8 @@ func (s *server) deskStart(w http.ResponseWriter, r *http.Request) {
 	for _, who := range deskBettors {
 		d.Chips[who] = startChips
 	}
-	sess := &loom.Session{PlatformID: platform.Visitor(r), Tags: []string{"forecast"},
-		State: loom.State{Modality: loom.ModalityText, Vars: map[string]any{}}}
+	sess := &noewright.Session{PlatformID: platform.Visitor(r), Tags: []string{"forecast"},
+		State: noewright.State{Modality: noewright.ModalityText, Vars: map[string]any{}}}
 	saveDesk(&sess.State, d)
 	if err := s.e.Sessions().Create(ctx, sess); err != nil {
 		platform.Error(w, http.StatusInternalServerError, "couldn't open a desk")
@@ -307,9 +307,9 @@ func (s *server) deskStart(w http.ResponseWriter, r *http.Request) {
 	}
 	sess.State.Vars["desk_id"] = sess.ID.String()
 	// Step 0 is the opening state, so "what if" on matchday 1 has a checkpoint to fork from.
-	step, err := s.e.RecordStep(ctx, sess, loom.ExternalStep{AgentSlug: "fd-open", Owner: ttOwner, Author: "desk",
-		Result: loom.NewTextResult("The desk opens with 1,000 chips each.", "stop", 0, 0)})
-	if err != nil && !errors.Is(err, loom.ErrSessionNotPersisted) {
+	step, err := s.e.RecordStep(ctx, sess, noewright.ExternalStep{AgentSlug: "fd-open", Owner: ttOwner, Author: "desk",
+		Result: noewright.NewTextResult("The desk opens with 1,000 chips each.", "stop", 0, 0)})
+	if err != nil && !errors.Is(err, noewright.ErrSessionNotPersisted) {
 		platform.Error(w, http.StatusInternalServerError, "couldn't open a desk")
 		return
 	}
@@ -318,7 +318,7 @@ func (s *server) deskStart(w http.ResponseWriter, r *http.Request) {
 	platform.JSON(w, http.StatusCreated, s.deskView(sess))
 }
 
-func (s *server) ownedDesk(w http.ResponseWriter, r *http.Request) (*loom.Session, bool) {
+func (s *server) ownedDesk(w http.ResponseWriter, r *http.Request) (*noewright.Session, bool) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		platform.Error(w, http.StatusNotFound, "desk not found")
@@ -406,27 +406,27 @@ func (s *server) deskPlay(w http.ResponseWriter, r *http.Request) {
 	inputs := map[string]any{
 		"Matchday": strconv.Itoa(f.Matchday), "Card": f.card(), "Odds": f.oddsText(), "Chips": strings.Join(chips, "; "),
 	}
-	step := func(role string, x *loom.Step) {
+	step := func(role string, x *noewright.Step) {
 		v := s.viewStep(ctx, role, x)
 		applyCost(&v, x, s.costs(ctx, sess.ID))
 		st.send("step", v)
 	}
-	fa := func(slug, out string) loom.FlowAgent {
-		return loom.FlowAgent{AgentSlug: slug, OutputKey: out, GeneratorOverride: run.generator, Overrides: run.overrides, Params: map[string]any{"effort": "low"}}
+	fa := func(slug, out string) noewright.FlowAgent {
+		return noewright.FlowAgent{AgentSlug: slug, OutputKey: out, GeneratorOverride: run.generator, Overrides: run.overrides, Params: map[string]any{"effort": "low"}}
 	}
 	lead := fa("fd-oddsmaker", "Preview")
 	lead.Stream, lead.Params = true, map[string]any{"effort": "medium"}
 	bankroll := fa("fd-bankroll", "Stakes")
 	bankroll.MaxRetries = 1
 
-	_, err = s.e.RunTurn(ctx, sess, loom.TurnRequest{
+	_, err = s.e.RunTurn(ctx, sess, noewright.TurnRequest{
 		Owner:  ttOwner,
-		Flow:   loom.Flow{Slug: "forecast-match", Lead: lead, Followers: []loom.FlowAgent{fa("fd-value", "ValuePick"), fa("fd-contrarian", "ContrarianPick"), bankroll}},
+		Flow:   noewright.Flow{Slug: "forecast-match", Lead: lead, Followers: []noewright.FlowAgent{fa("fd-value", "ValuePick"), fa("fd-contrarian", "ContrarianPick"), bankroll}},
 		Inputs: inputs,
-		OnChunk: func(c loom.Chunk) {
+		OnChunk: func(c noewright.Chunk) {
 			st.send("chunk", map[string]string{"text": c.Content})
 		},
-		OnStep: func(role string, x *loom.Step, err error) {
+		OnStep: func(role string, x *noewright.Step, err error) {
 			if err != nil || x == nil {
 				st.send("step", stepView{Role: role, Agent: strings.TrimPrefix(role, "follower:"), Error: explain(err)})
 				return
@@ -446,10 +446,10 @@ func (s *server) deskPlay(w http.ResponseWriter, r *http.Request) {
 	h, a, outcome := f.play(d.Seed)
 	score := fmt.Sprintf("%d-%d", h, a)
 	settle, _ := json.Marshal(map[string]any{"matchday": f.Matchday, "outcome": outcome, "score": score, "you": you})
-	settled, err := s.e.RecordStep(ctx, sess, loom.ExternalStep{AgentSlug: "fd-settle", Owner: ttOwner, Author: "desk",
-		Result: loom.NewTextResult(fmt.Sprintf("Full time: %s %s %s.", f.Home.Name, score, f.Away.Name), "stop", 0, 0),
+	settled, err := s.e.RecordStep(ctx, sess, noewright.ExternalStep{AgentSlug: "fd-settle", Owner: ttOwner, Author: "desk",
+		Result: noewright.NewTextResult(fmt.Sprintf("Full time: %s %s %s.", f.Home.Name, score, f.Away.Name), "stop", 0, 0),
 		Inputs: map[string]any{"Settle": string(settle)}})
-	if err != nil && !errors.Is(err, loom.ErrSessionNotPersisted) {
+	if err != nil && !errors.Is(err, noewright.ErrSessionNotPersisted) {
 		st.fail(err)
 		return
 	}
@@ -469,13 +469,13 @@ func (s *server) deskPlay(w http.ResponseWriter, r *http.Request) {
 			bets = append(bets, fmt.Sprintf("%s staked %d on %s (%+d)", who, b.Stake, b.Pick, b.Delta))
 		}
 	}
-	comment, err := s.e.RunStep(ctx, sess, loom.StepRequest{
+	comment, err := s.e.RunStep(ctx, sess, noewright.StepRequest{
 		AgentSlug: "fd-commentator", Owner: ttOwner, GeneratorOverride: run.generator, Overrides: run.overrides,
 		Params:  map[string]any{"effort": "low"},
 		Inputs:  map[string]any{"Card": f.card(), "Result": fmt.Sprintf("%s %s %s (%s)", f.Home.Name, score, f.Away.Name, outcome), "Bets": strings.Join(bets, "; ")},
-		OnChunk: func(c loom.Chunk) { st.send("comment", map[string]string{"text": c.Content}) },
+		OnChunk: func(c noewright.Chunk) { st.send("comment", map[string]string{"text": c.Content}) },
 	})
-	if err == nil || errors.Is(err, loom.ErrSessionNotPersisted) {
+	if err == nil || errors.Is(err, noewright.ErrSessionNotPersisted) {
 		step("commentary", comment)
 	}
 	st.send("state", s.deskView(sess))

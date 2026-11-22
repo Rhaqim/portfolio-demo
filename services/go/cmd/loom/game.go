@@ -17,15 +17,15 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	loom "github.com/rhaqim/loom"
+	"github.com/rhaqim/noewright"
 
 	"github.com/rhaqim/demo/internal/platform"
 )
 
-// Multiplayer tabletop. One loom session holds the whole table's story; every
+// Multiplayer tabletop. One Noewright session holds the whole table's story; every
 // change to the party (a join, a referee verdict, a DM's adjustment) is a
-// loom step whose post-hook edits the typed game state in State.Snapshot, so
-// loom checkpoints it and a fork at the end of any round rewinds everyone.
+// Noewright step whose post-hook edits the typed game state in State.Snapshot, so
+// Noewright checkpoints it and a fork at the end of any round rewinds everyone.
 //
 // The host picks the model and supplies the key. The key is held in process
 // memory for that game only (never in the database), and every AI step in
@@ -34,7 +34,7 @@ import (
 const (
 	ttOwner        = "" // tabletop agents are global; every game shares them
 	maxPlayers     = 6
-	gameStepBudget = 400 // agent steps per game per day, enforced by loom
+	gameStepBudget = 400 // agent steps per game per day, enforced by Noewright
 	keyTTL         = 6 * time.Hour
 )
 
@@ -47,13 +47,13 @@ type npc struct {
 	Persona string `json:"persona"`
 }
 
-// gameState is the typed state loom checkpoints with every step.
+// gameState is the typed state Noewright checkpoints with every step.
 type gameState struct {
 	Round   int               `json:"round"`
 	Players map[string]*sheet `json:"players"` // by visitor id
 }
 
-func loadState(st *loom.State) gameState {
+func loadState(st *noewright.State) gameState {
 	gs := gameState{Players: map[string]*sheet{}}
 	_ = json.Unmarshal(st.Snapshot, &gs)
 	if gs.Players == nil {
@@ -62,7 +62,7 @@ func loadState(st *loom.State) gameState {
 	return gs
 }
 
-func saveState(st *loom.State, gs gameState) {
+func saveState(st *noewright.State, gs gameState) {
 	b, _ := json.Marshal(gs)
 	st.Snapshot = b
 	if st.Vars == nil {
@@ -418,7 +418,7 @@ func (s *server) seedGames(ctx context.Context) error {
 }
 
 func (s *server) registerGameHooks() {
-	s.e.Hooks().RegisterPost("tabletop-state", func(_ context.Context, req *loom.StepRequest, res loom.Result) (loom.Result, error) {
+	s.e.Hooks().RegisterPost("tabletop-state", func(_ context.Context, req *noewright.StepRequest, res noewright.Result) (noewright.Result, error) {
 		if req.Session == nil || !strings.HasPrefix(req.AgentSlug, "tt-") {
 			return res, nil
 		}
@@ -426,14 +426,14 @@ func (s *server) registerGameHooks() {
 		if st.Vars == nil {
 			st.Vars = map[string]any{}
 		}
-		text := loom.ResultText(res)
+		text := noewright.ResultText(res)
 		gs := loadState(st)
 		switch req.AgentSlug {
 		case "tt-gm", "tt-human-dm":
 			st.Vars["last_scene"] = clip(text, 1800)
 			gs.Round++
 		case "tt-chronicler":
-			// Followers run in parallel; since loom v0.0.3 each step's state
+			// Followers run in parallel; since v0.0.3 (then Noewright) each step's state
 			// merges three-way against what it started from, so the
 			// chronicler's summary and the referee's sheets can't clobber
 			// each other.
@@ -554,7 +554,7 @@ func boolInt(b bool) int {
 	return 0
 }
 
-func (s *server) session(ctx context.Context, g *game) (*loom.Session, error) {
+func (s *server) session(ctx context.Context, g *game) (*noewright.Session, error) {
 	id, err := uuid.Parse(g.SessionID)
 	if err != nil {
 		return nil, err
@@ -562,23 +562,23 @@ func (s *server) session(ctx context.Context, g *game) (*loom.Session, error) {
 	return s.e.Sessions().GetHeader(ctx, id)
 }
 
-// joinStep makes a visitor a loom participant and records their character
+// joinStep makes a visitor a Noewright participant and records their character
 // sheet as a step, so both are checkpointed: a fork from before the join
 // drops the player and their sheet together.
-func (s *server) joinStep(ctx context.Context, sess *loom.Session, visitor, role string, sh *sheet) error {
-	if err := s.e.AddParticipant(ctx, sess, loom.Participant{ID: visitor, Role: role}); err != nil && !errors.Is(err, loom.ErrParticipantExists) {
+func (s *server) joinStep(ctx context.Context, sess *noewright.Session, visitor, role string, sh *sheet) error {
+	if err := s.e.AddParticipant(ctx, sess, noewright.Participant{ID: visitor, Role: role}); err != nil && !errors.Is(err, noewright.ErrParticipantExists) {
 		return err
 	}
 	if sh == nil {
 		return nil // a human game master has no sheet
 	}
 	payload, _ := json.Marshal(map[string]any{"visitor": visitor, "sheet": sh})
-	_, err := s.e.RecordStep(ctx, sess, loom.ExternalStep{
+	_, err := s.e.RecordStep(ctx, sess, noewright.ExternalStep{
 		AgentSlug: "tt-join", Owner: ttOwner, Author: "participant:" + visitor,
-		Result: loom.NewTextResult(fmt.Sprintf("%s the %s joins the party.", sh.Name, sh.Archetype), "stop", 0, 0),
+		Result: noewright.NewTextResult(fmt.Sprintf("%s the %s joins the party.", sh.Name, sh.Archetype), "stop", 0, 0),
 		Inputs: map[string]any{"Join": string(payload)},
 	})
-	if errors.Is(err, loom.ErrSessionNotPersisted) {
+	if errors.Is(err, noewright.ErrSessionNotPersisted) {
 		return nil
 	}
 	return err
@@ -592,7 +592,7 @@ func (s *server) setBusy(code string, busy bool) {
 	r.broadcast(event{Name: "busy", Data: map[string]bool{"busy": busy}})
 }
 
-// resolveRound runs one AI-DM round: the rules agent, Go dice, then a loom
+// resolveRound runs one AI-DM round: the rules agent, Go dice, then a Noewright
 // turn (streaming GM lead + referee, chronicler and suggester in parallel).
 // It runs in the background; everything reaches players through the room.
 func (s *server) resolveRound(code string, opening bool) {
@@ -641,7 +641,7 @@ func (s *server) resolveRound(code string, opening bool) {
 	}
 	gs := loadState(&sess.State)
 	var led ledger
-	views := func(role string, step *loom.Step) stepView {
+	views := func(role string, step *noewright.Step) stepView {
 		v := s.viewStep(ctx, role, step)
 		applyCost(&v, step, s.costs(ctx, sess.ID))
 		return v
@@ -650,11 +650,11 @@ func (s *server) resolveRound(code string, opening bool) {
 	// 1. The rules agent decides who needs a check.
 	var rolls []string
 	if !opening {
-		step, err := s.e.RunStep(ctx, sess, loom.StepRequest{
+		step, err := s.e.RunStep(ctx, sess, noewright.StepRequest{
 			AgentSlug: "tt-rules", Owner: ttOwner, Inputs: map[string]any{"Actions": actions},
 			GeneratorOverride: run.generator, Overrides: run.overrides, Params: effort("tt-rules"),
 		})
-		if err != nil && !errors.Is(err, loom.ErrSessionNotPersisted) {
+		if err != nil && !errors.Is(err, noewright.ErrSessionNotPersisted) {
 			s.post(code, g.Round, "system", map[string]string{"text": explain(err), "tone": "error"})
 			return
 		}
@@ -668,7 +668,7 @@ func (s *server) resolveRound(code string, opening bool) {
 			DC      int    `json:"dc"`
 			Reason  string `json:"reason"`
 		}
-		_ = extractJSON(loom.ResultText(step.Result), &decisions)
+		_ = extractJSON(noewright.ResultText(step.Result), &decisions)
 		for _, d := range decisions {
 			sh := gs.byName(d.Name)
 			if !d.Check || sh == nil {
@@ -683,22 +683,22 @@ func (s *server) resolveRound(code string, opening bool) {
 		rolls = []string{"No checks this round."}
 	}
 
-	// 3. One loom turn: the GM streams to every player, then three followers
+	// 3. One Noewright turn: the GM streams to every player, then three followers
 	//    work on its narration in parallel.
-	fa := func(slug string) loom.FlowAgent {
-		return loom.FlowAgent{AgentSlug: slug, GeneratorOverride: run.generator, Overrides: run.overrides, Params: effort(slug)}
+	fa := func(slug string) noewright.FlowAgent {
+		return noewright.FlowAgent{AgentSlug: slug, GeneratorOverride: run.generator, Overrides: run.overrides, Params: effort(slug)}
 	}
 	lead := fa("tt-gm")
 	lead.Stream, lead.OutputKey = true, "Narration"
-	turn, err := s.e.RunTurn(ctx, sess, loom.TurnRequest{
+	turn, err := s.e.RunTurn(ctx, sess, noewright.TurnRequest{
 		Owner:  ttOwner,
-		Flow:   loom.Flow{Slug: "tabletop-round", Lead: lead, Followers: []loom.FlowAgent{fa("tt-referee"), fa("tt-chronicler"), fa("tt-suggest")}},
-		Action: &loom.Action{Kind: loom.ActionFreeText, Payload: map[string]any{"text": actions}},
+		Flow:   noewright.Flow{Slug: "tabletop-round", Lead: lead, Followers: []noewright.FlowAgent{fa("tt-referee"), fa("tt-chronicler"), fa("tt-suggest")}},
+		Action: &noewright.Action{Kind: noewright.ActionFreeText, Payload: map[string]any{"text": actions}},
 		Inputs: map[string]any{"Actions": actions, "Rolls": strings.Join(rolls, "\n")},
-		// Players watch through Engine.Subscribe (see events); loom publishes
+		// Players watch through Engine.Subscribe (see events); Noewright publishes
 		// the lead's chunks to subscribers only when the caller streams.
-		OnChunk: func(loom.Chunk) {},
-		OnStep: func(role string, step *loom.Step, err error) {
+		OnChunk: func(noewright.Chunk) {},
+		OnStep: func(role string, step *noewright.Step, err error) {
 			if err == nil && step != nil {
 				led.add(views(role, step))
 			}
@@ -714,17 +714,17 @@ func (s *server) resolveRound(code string, opening bool) {
 
 // finishRound records a narrated round: the feed entry, suggestions, cost,
 // the checkpoint a rewind would fork at, and cleared actions.
-func (s *server) finishRound(ctx context.Context, g *game, sess *loom.Session, turn *loom.Turn, round int, author string, led *ledger, dry bool) {
+func (s *server) finishRound(ctx context.Context, g *game, sess *noewright.Session, turn *noewright.Turn, round int, author string, led *ledger, dry bool) {
 	var suggestions map[string][]string
 	if fs, ok := turn.Followers["tt-suggest"]; ok {
-		_ = extractJSON(loom.ResultText(fs.Result), &suggestions)
+		_ = extractJSON(noewright.ResultText(fs.Result), &suggestions)
 	}
 	checkpoint := 0
 	for _, x := range turn.Steps {
 		checkpoint = max(checkpoint, x.Index)
 	}
 	s.post(g.Code, round, "narration", map[string]any{
-		"author": author, "text": loom.ResultText(turn.Lead.Result), "suggestions": suggestions,
+		"author": author, "text": noewright.ResultText(turn.Lead.Result), "suggestions": suggestions,
 		"summary": sess.State.Vars["summary"],
 	})
 	usd, in, out, priced := led.totals()
@@ -918,10 +918,10 @@ func (s *server) createGame(w http.ResponseWriter, r *http.Request) {
 	}
 
 	gs := gameState{Players: map[string]*sheet{}}
-	sess := &loom.Session{
+	sess := &noewright.Session{
 		PlatformID: "game:" + code,
 		Tags:       []string{"tabletop", "multiplayer"},
-		State: loom.State{Modality: loom.ModalityText, Vars: map[string]any{
+		State: noewright.State{Modality: noewright.ModalityText, Vars: map[string]any{
 			"world": req.World, "npcs_text": strings.Join(npcLines, "\n"),
 			"summary": "The adventure is just beginning.", "last_scene": "None yet. This is the opening scene.",
 		}},
@@ -970,17 +970,17 @@ func (s *server) createGame(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) ensureGameBudget(ctx context.Context, code string) error {
-	return s.e.Budgets().Create(ctx, &loom.Budget{
+	return s.e.Budgets().Create(ctx, &noewright.Budget{
 		Name:     "game-daily-steps",
-		Target:   loom.BudgetTarget{Kind: loom.TargetPlatformID, Key: "game:" + code},
-		Window:   loom.BudgetWindowDay,
-		Limit:    loom.BudgetLimit{Steps: gameStepBudget},
-		OnExceed: loom.BudgetBlock,
+		Target:   noewright.BudgetTarget{Kind: noewright.TargetPlatformID, Key: "game:" + code},
+		Window:   noewright.BudgetWindowDay,
+		Limit:    noewright.BudgetLimit{Steps: gameStepBudget},
+		OnExceed: noewright.BudgetBlock,
 		Active:   true,
 	})
 }
 
-func (s *server) addPlayer(ctx context.Context, code string, sess *loom.Session, visitor string, sh sheet, archetypeID string) error {
+func (s *server) addPlayer(ctx context.Context, code string, sess *noewright.Session, visitor string, sh sheet, archetypeID string) error {
 	if err := s.joinStep(ctx, sess, visitor, "player", &sh); err != nil {
 		return err
 	}
@@ -1136,9 +1136,9 @@ func (s *server) events(w http.ResponseWriter, r *http.Request) {
 		st.send("state", v)
 	}
 
-	// Live agent activity comes straight from loom: Engine.Subscribe on the
+	// Live agent activity comes straight from Noewright: Engine.Subscribe on the
 	// game's session. A rewind forks a new session, so the room tells every
-	// stream to resubscribe; a lagging stream is dropped by loom and resumes.
+	// stream to resubscribe; a lagging stream is dropped by Noewright and resumes.
 	ctx := r.Context()
 	sub, live, sid := s.subscribeGame(ctx, g.Code)
 	defer func() {
@@ -1191,10 +1191,10 @@ func (s *server) events(w http.ResponseWriter, r *http.Request) {
 // resubscribe is an internal room event: the game's session changed.
 const resubscribe = "_resubscribe"
 
-// subscribeGame subscribes to the game's current loom session, live events
+// subscribeGame subscribes to the game's current Noewright session, live events
 // only (FromStep -1: nothing replayed; the feed already carries history).
 // On failure it returns a nil channel, which simply never fires.
-func (s *server) subscribeGame(ctx context.Context, code string) (*loom.Subscription, <-chan loom.SessionEvent, uuid.UUID) {
+func (s *server) subscribeGame(ctx context.Context, code string) (*noewright.Subscription, <-chan noewright.SessionEvent, uuid.UUID) {
 	g, err := s.loadGame(ctx, code)
 	if err != nil {
 		return nil, nil, uuid.Nil
@@ -1203,7 +1203,7 @@ func (s *server) subscribeGame(ctx context.Context, code string) (*loom.Subscrip
 	if err != nil {
 		return nil, nil, uuid.Nil
 	}
-	sub, err := s.e.Subscribe(ctx, sid, loom.SubscribeOptions{FromStep: -1})
+	sub, err := s.e.Subscribe(ctx, sid, noewright.SubscribeOptions{FromStep: -1})
 	if err != nil {
 		slog.Warn("subscribe", "code", code, "err", err)
 		return nil, nil, sid
@@ -1211,10 +1211,10 @@ func (s *server) subscribeGame(ctx context.Context, code string) (*loom.Subscrip
 	return sub, sub.Events, sid
 }
 
-// forward turns loom session events into the page's "step" and "chunk"
+// forward turns Noewright session events into the page's "step" and "chunk"
 // events. Recorded bookkeeping steps (joins, adjustments) stay out of the
 // live list; they show up in the feed instead.
-func (s *server) forward(ctx context.Context, st *stream, sid uuid.UUID, ev loom.SessionEvent) {
+func (s *server) forward(ctx context.Context, st *stream, sid uuid.UUID, ev noewright.SessionEvent) {
 	if ev.Agent == "tt-join" || ev.Agent == "tt-adjust" {
 		return
 	}
@@ -1226,13 +1226,13 @@ func (s *server) forward(ctx context.Context, st *stream, sid uuid.UUID, ev loom
 		role = "npc"
 	}
 	switch ev.Type {
-	case loom.EventChunk:
+	case noewright.EventChunk:
 		st.send("chunk", map[string]string{"text": ev.Chunk})
-	case loom.EventStepStarted:
+	case noewright.EventStepStarted:
 		st.send("step_started", map[string]string{"agent": ev.Agent, "role": role})
-	case loom.EventStepFailed:
+	case noewright.EventStepFailed:
 		st.send("step", stepView{Role: role, Agent: ev.Agent, Error: redact(ev.Err)})
-	case loom.EventStepDone:
+	case noewright.EventStepDone:
 		if ev.Step == nil {
 			return
 		}
@@ -1366,7 +1366,7 @@ func (s *server) resolveNow(w http.ResponseWriter, r *http.Request) {
 	platform.JSON(w, http.StatusAccepted, map[string]bool{"ok": true})
 }
 
-// narrate records the human DM's narration as the lead of a loom turn. With
+// narrate records the human DM's narration as the lead of a Noewright turn. With
 // bookkeeping on, AI referee, chronicler and suggester follow it in parallel,
 // exactly as they follow the AI game master.
 func (s *server) narrate(w http.ResponseWriter, r *http.Request) {
@@ -1432,26 +1432,26 @@ func (s *server) narrate(w http.ResponseWriter, r *http.Request) {
 	s.setBusy(g.Code, true)
 	defer s.setBusy(g.Code, false)
 
-	// A human-led turn: loom records the host's text as the lead step
+	// A human-led turn: Noewright records the host's text as the lead step
 	// (TurnRequest.LeadResult, no generator, no cost) and runs the AI
 	// followers on it exactly as it would on the AI game master's narration.
-	lead := loom.FlowAgent{AgentSlug: "tt-human-dm", OutputKey: "Narration"}
-	var followers []loom.FlowAgent
+	lead := noewright.FlowAgent{AgentSlug: "tt-human-dm", OutputKey: "Narration"}
+	var followers []noewright.FlowAgent
 	if g.Bookkeeping {
 		for _, slug := range []string{"tt-referee", "tt-chronicler", "tt-suggest"} {
-			followers = append(followers, loom.FlowAgent{AgentSlug: slug, GeneratorOverride: run.generator, Overrides: run.overrides, Params: effort(slug)})
+			followers = append(followers, noewright.FlowAgent{AgentSlug: slug, GeneratorOverride: run.generator, Overrides: run.overrides, Params: effort(slug)})
 		}
 	}
 	var led ledger
 	round := g.Round + 1
-	turn, err := s.e.RunTurn(ctx, sess, loom.TurnRequest{
+	turn, err := s.e.RunTurn(ctx, sess, noewright.TurnRequest{
 		Owner:      ttOwner,
-		Flow:       loom.Flow{Slug: "tabletop-human-round", Lead: lead, Followers: followers},
-		Action:     &loom.Action{Kind: loom.ActionFreeText, Payload: map[string]any{"text": text}, ParticipantID: g.Host},
-		LeadResult: loom.NewTextResult(text, "stop", 0, 0),
+		Flow:       noewright.Flow{Slug: "tabletop-human-round", Lead: lead, Followers: followers},
+		Action:     &noewright.Action{Kind: noewright.ActionFreeText, Payload: map[string]any{"text": text}, ParticipantID: g.Host},
+		LeadResult: noewright.NewTextResult(text, "stop", 0, 0),
 		LeadAuthor: "participant:" + g.Host,
 		Inputs:     map[string]any{"Actions": strings.Join(lines, "\n"), "Rolls": strings.Join(rolls, "\n")},
-		OnStep: func(role string, step *loom.Step, err error) {
+		OnStep: func(role string, step *noewright.Step, err error) {
 			if err == nil && step != nil {
 				v := s.viewStep(ctx, role, step)
 				applyCost(&v, step, s.costs(ctx, sess.ID))
@@ -1546,13 +1546,13 @@ World: %s
 Reply in character in one to three sentences: spoken dialogue in quotes, plus at most one short action.
 Never speak or decide for the player characters. Keep it suitable for a general audience.`, n.Name, n.Persona, clip(g.World, 600))
 	scene, _ := sess.State.Vars["last_scene"].(string)
-	step, err := s.e.RunStep(ctx, sess, loom.StepRequest{
+	step, err := s.e.RunStep(ctx, sess, noewright.StepRequest{
 		AgentSlug: "tt-npc", Owner: ttOwner,
-		SystemPromptOverride: &loom.PromptRef{Literal: persona},
+		SystemPromptOverride: &noewright.PromptRef{Literal: persona},
 		Inputs:               map[string]any{"Scene": scene, "Direction": clip(strings.TrimSpace(req.Direction), 300), "NpcName": n.Name},
 		GeneratorOverride:    run.generator, Overrides: run.overrides, Params: effort("tt-npc"),
 	})
-	if err != nil && !errors.Is(err, loom.ErrSessionNotPersisted) {
+	if err != nil && !errors.Is(err, noewright.ErrSessionNotPersisted) {
 		platform.Error(w, http.StatusBadGateway, explain(err))
 		return
 	}
@@ -1560,7 +1560,7 @@ Never speak or decide for the player characters. Keep it suitable for a general 
 	applyCost(&v, step, s.costs(ctx, sess.ID))
 	var led ledger
 	led.add(v)
-	s.post(g.Code, g.Round, "npc", map[string]string{"name": n.Name, "text": loom.ResultText(step.Result)})
+	s.post(g.Code, g.Round, "npc", map[string]string{"name": n.Name, "text": noewright.ResultText(step.Result)})
 	s.charge(g, g.Round, "NPC: "+n.Name, &led, run.dry)
 	platform.JSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -1605,9 +1605,9 @@ func (s *server) adjust(w http.ResponseWriter, r *http.Request) {
 	}
 	payload, _ := json.Marshal(map[string]any{"visitor": visitor, "verdict": req.Change})
 	desc := describeChange(req.Player, req.Change)
-	if _, err := s.e.RecordStep(ctx, sess, loom.ExternalStep{AgentSlug: "tt-adjust", Owner: ttOwner, Author: "participant:" + g.Host,
-		Result: loom.NewTextResult(desc, "stop", 0, 0),
-		Inputs: map[string]any{"Adjust": string(payload)}}); err != nil && !errors.Is(err, loom.ErrSessionNotPersisted) {
+	if _, err := s.e.RecordStep(ctx, sess, noewright.ExternalStep{AgentSlug: "tt-adjust", Owner: ttOwner, Author: "participant:" + g.Host,
+		Result: noewright.NewTextResult(desc, "stop", 0, 0),
+		Inputs: map[string]any{"Adjust": string(payload)}}); err != nil && !errors.Is(err, noewright.ErrSessionNotPersisted) {
 		platform.Error(w, http.StatusInternalServerError, explain(err))
 		return
 	}
@@ -1639,7 +1639,7 @@ func describeChange(name string, v verdict) string {
 	return fmt.Sprintf("The game master adjusts %s: %s.", name, strings.Join(parts, ", "))
 }
 
-// rewind forks the game's session at the end of an earlier round. loom
+// rewind forks the game's session at the end of an earlier round. Noewright
 // rebuilds the branch from that step's checkpoint, so every sheet, the
 // summary and the last scene go back together.
 func (s *server) rewind(w http.ResponseWriter, r *http.Request) {

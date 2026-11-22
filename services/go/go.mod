@@ -5,8 +5,8 @@ go 1.26.0
 require (
 	github.com/Rhaqim/buckt v1.9.2
 	github.com/google/uuid v1.6.0
-	github.com/rhaqim/loom v0.0.3
-	github.com/rhaqim/loom/generator/anthropic v0.0.0-20261113034118-c076b407b716
+	github.com/rhaqim/noewright v0.1.0
+	github.com/rhaqim/noewright/generator/anthropic v0.1.0
 	modernc.org/sqlite v1.62.0
 )
 
