@@ -87,6 +87,28 @@ func main() {
 		panic(err)
 	}
 
+	s := newServer(ctx, db)
+	e := s.e
+	go s.gameJanitor()
+	gcCtx, stopGC := context.WithCancel(context.Background())
+	go e.GC().Run(gcCtx)
+
+	mux := s.routes()
+
+	platform.Serve("loom", platform.Env("ADDR", ":8080"), platform.WithVisitor(mux), func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		stopGC()
+		_ = e.Close(ctx)
+		db.Close()
+	})
+}
+
+// newServer builds the server and its Noewright engine on db: models,
+// generators (the dry-run one included), seeded agents, hooks and the graph
+// functions the demos call. main adds the background workers and routes.
+func newServer(ctx context.Context, db *sql.DB) *server {
+	var err error
 	s := &server{
 		db:       db,
 		models:   map[string]model{},
@@ -163,10 +185,12 @@ func main() {
 		panic(err)
 	}
 	s.registerCaptionHooks()
-	go s.gameJanitor()
-	gcCtx, stopGC := context.WithCancel(context.Background())
-	go e.GC().Run(gcCtx)
+	s.registerGraphFuncs()
+	return s
+}
 
+// routes is the demo's HTTP API.
+func (s *server) routes() *http.ServeMux {
 	creates := platform.NewLimiter(10, time.Hour)
 	verifies := platform.NewLimiter(30, time.Hour)
 	acts := platform.NewLimiter(300, time.Hour)
@@ -210,14 +234,7 @@ func main() {
 	mux.HandleFunc("GET /api/loom/pipeline/preset", s.pipelinePreset)
 	mux.HandleFunc("POST /api/loom/pipeline/plan", s.pipelinePlan)
 	mux.HandleFunc("POST /api/loom/pipeline/run", s.runs.Limit(s.pipelineRun))
-
-	platform.Serve("loom", platform.Env("ADDR", ":8080"), platform.WithVisitor(mux), func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		stopGC()
-		_ = e.Close(ctx)
-		db.Close()
-	})
+	return mux
 }
 
 // gcConfig turns on Noewright's GC with retention rules for a public demo:

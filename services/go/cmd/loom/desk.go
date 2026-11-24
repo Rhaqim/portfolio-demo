@@ -177,6 +177,13 @@ func (s *server) registerDeskHooks() {
 				You      bettor `json:"you"`
 			}
 			raw, _ := req.Inputs["Settle"].(string)
+			// A graph run records the settlement from the fd-settle-match
+			// function, which carries it in its structured output.
+			if sr, ok := res.(*noewright.StructuredResult); ok {
+				if v, ok := sr.Data["settle"].(string); ok {
+					raw = v
+				}
+			}
 			if json.Unmarshal([]byte(raw), &in) != nil {
 				return res, nil
 			}
@@ -411,47 +418,55 @@ func (s *server) deskPlay(w http.ResponseWriter, r *http.Request) {
 		applyCost(&v, x, s.costs(ctx, sess.ID))
 		st.send("step", v)
 	}
-	fa := func(slug, out string) noewright.FlowAgent {
-		return noewright.FlowAgent{AgentSlug: slug, OutputKey: out, GeneratorOverride: run.generator, Overrides: run.overrides, Params: map[string]any{"effort": "low"}}
-	}
-	lead := fa("fd-oddsmaker", "Preview")
-	lead.Stream, lead.Params = true, map[string]any{"effort": "medium"}
-	bankroll := fa("fd-bankroll", "Stakes")
-	bankroll.MaxRetries = 1
 
-	_, err = s.e.RunTurn(ctx, sess, noewright.TurnRequest{
-		Owner:  ttOwner,
-		Flow:   noewright.Flow{Slug: "forecast-match", Lead: lead, Followers: []noewright.FlowAgent{fa("fd-value", "ValuePick"), fa("fd-contrarian", "ContrarianPick"), bankroll}},
-		Inputs: inputs,
-		OnChunk: func(c noewright.Chunk) {
+	// One graph plays the matchday: the oddsmaker streams its preview, the two
+	// bettors pick in parallel, the bankroll agent sizes stakes, then Go plays
+	// the match from the desk's seed and settles every bet. The settlement is a
+	// recorded fd-settle step, so the result and every chip change are
+	// checkpointed for rewinds.
+	graph := deskMatch(run)
+	slugs := map[string]string{}
+	for _, n := range graph.Nodes {
+		if n.Agent != nil {
+			slugs[n.ID] = n.Agent.AgentSlug
+		}
+	}
+	inputs["You"] = you
+	res, err := s.e.RunGraph(ctx, sess, noewright.GraphRequest{
+		Graph:     graph,
+		Owner:     ttOwner,
+		Inputs:    inputs,
+		Overrides: run.overrides,
+		OnChunk: func(node string, c noewright.Chunk) {
 			st.send("chunk", map[string]string{"text": c.Content})
 		},
-		OnStep: func(role string, x *noewright.Step, err error) {
-			if err != nil || x == nil {
-				st.send("step", stepView{Role: role, Agent: strings.TrimPrefix(role, "follower:"), Error: explain(err)})
-				return
+		OnNode: func(ev noewright.NodeEvent) {
+			slug, ok := slugs[ev.Node]
+			if !ok {
+				return // the settlement is reported as the result below
 			}
-			step(role, x)
+			switch {
+			case ev.Kind == noewright.NodeFailed:
+				st.send("step", stepView{Role: deskRole(ev.Node, slug), Agent: slug, Error: explain(ev.Err)})
+			case ev.Kind == noewright.NodeDone && ev.Step != nil:
+				step(deskRole(ev.Node, slug), ev.Step)
+			}
 		},
 	})
-	if err != nil {
+	if res == nil || (err != nil && !errors.Is(err, noewright.ErrSessionNotPersisted)) {
 		st.fail(err)
 		return
 	}
-	d = loadDesk(&sess.State)
-	st.send("risk", map[string]any{"notes": d.Risk, "pending": d.Pending})
-
-	// Full time: Go decides the match from its seed; the settlement is a
-	// recorded step, so the result and every chip change are checkpointed.
-	h, a, outcome := f.play(d.Seed)
-	score := fmt.Sprintf("%d-%d", h, a)
-	settle, _ := json.Marshal(map[string]any{"matchday": f.Matchday, "outcome": outcome, "score": score, "you": you})
-	settled, err := s.e.RecordStep(ctx, sess, noewright.ExternalStep{AgentSlug: "fd-settle", Owner: ttOwner, Author: "desk",
-		Result: noewright.NewTextResult(fmt.Sprintf("Full time: %s %s %s.", f.Home.Name, score, f.Away.Name), "stop", 0, 0),
-		Inputs: map[string]any{"Settle": string(settle)}})
-	if err != nil && !errors.Is(err, noewright.ErrSessionNotPersisted) {
-		st.fail(err)
+	settled := res.Nodes["settle"]
+	if settled == nil {
+		st.fail(fmt.Errorf("the match could not be settled: %v", res.Errors["settle"]))
 		return
+	}
+	var outcome, score string
+	if sr, ok := settled.Result.(*noewright.StructuredResult); ok {
+		outcome, _ = sr.Data["outcome"].(string)
+		score, _ = sr.Data["score"].(string)
+		st.send("risk", map[string]any{"notes": sr.Data["risk"], "pending": sr.Data["pending"]})
 	}
 	deskID, _ := sess.State.Vars["desk_id"].(string)
 	_, _ = s.db.ExecContext(ctx, `INSERT OR REPLACE INTO demo_fd_rounds (desk, matchday, session_id, checkpoint) VALUES (?, ?, ?, ?)`,

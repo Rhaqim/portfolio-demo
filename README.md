@@ -74,9 +74,12 @@ six-character code (or the invite link `rhaqim.com/demo/noewright?game=CODE`; ol
 Up to six players join from their own browsers; everyone watches over SSE.
 Built on the shared-session features that arrived in loom v0.0.3.
 
-- *AI game master:* each round, a rules agent decides who needs a check, Go
-  rolls the d20s, then one Noewright turn streams the GM's narration to every
-  player while a referee, chronicler and suggester run in parallel.
+- *AI game master:* each round is one Noewright graph (`RunGraph`, see
+  `graphs.go`): a rules agent decides who needs a check, a Go function node
+  rolls the d20s against the sheets in the session snapshot and posts each roll
+  to the feed, then the GM streams its narration to every player while a
+  referee, chronicler and suggester run in parallel. The opening round starts
+  the graph at the GM, since there are no actions to check.
 - *Human game master:* the host narrates; their text is the recorded lead of
   the same Noewright turn (`TurnRequest.LeadResult`, authored by the host, no
   generator, no cost) and, with bookkeeping on, the same three AI followers
@@ -109,13 +112,14 @@ validates the wiring and plans it into parallel layers.
 
 **Forecast Desk.** A fictional eight-team league with play chips (`desk.go`,
 `desk_sim.go`). Matches are decided in Go from a seed, with odds from a Poisson
-model plus a 6% margin. One Noewright turn per match: the odds-maker streams a
-preview, the value hunter and contrarian pick in parallel, and the bankroll
-manager (planned into the next layer because it reads both picks) sizes their
-stakes. A post-hook, the risk referee, rejects an over-limit stake once with
-`ErrRetryWith` (the reason goes into the retry's prompt) and trims it on the
-retry. Settlement is a recorded step, so "What if?" forks before any matchday
-and replays it: same seed, same score, different bets. The backtest runs the
+model plus a 6% margin. One Noewright graph per match (`graphs.go`): the
+odds-maker streams a preview, the value hunter and contrarian pick in parallel,
+and the bankroll manager, joining both picks, sizes their stakes. A post-hook,
+the risk referee, rejects an over-limit stake once with `ErrRetryWith` (the
+reason goes into the retry's prompt) and trims it on the retry. A Go function
+node then plays the match from the seed and settles the bets; it is recorded as
+an `fd-settle` step, so "What if?" forks before any matchday and replays it:
+same seed, same score, different bets. The backtest runs the
 strategies as plain Go over up to 500 seeded matches, no model calls.
 
 **Sermon captions.** Live captions of a sermon in Yorùbá, Igbo and Nigerian

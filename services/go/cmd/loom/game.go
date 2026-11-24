@@ -639,7 +639,6 @@ func (s *server) resolveRound(code string, opening bool) {
 		s.post(code, g.Round, "system", map[string]string{"text": "The game's session is missing.", "tone": "error"})
 		return
 	}
-	gs := loadState(&sess.State)
 	var led ledger
 	views := func(role string, step *noewright.Step) stepView {
 		v := s.viewStep(ctx, role, step)
@@ -647,84 +646,69 @@ func (s *server) resolveRound(code string, opening bool) {
 		return v
 	}
 
-	// 1. The rules agent decides who needs a check.
-	var rolls []string
-	if !opening {
-		step, err := s.e.RunStep(ctx, sess, noewright.StepRequest{
-			AgentSlug: "tt-rules", Owner: ttOwner, Inputs: map[string]any{"Actions": actions},
-			GeneratorOverride: run.generator, Overrides: run.overrides, Params: effort("tt-rules"),
-		})
-		if err != nil && !errors.Is(err, noewright.ErrSessionNotPersisted) {
-			s.post(code, g.Round, "system", map[string]string{"text": explain(err), "tone": "error"})
-			return
-		}
-		led.add(views("rules", step))
-
-		// 2. Go rolls the dice the agent asked for.
-		var decisions []struct {
-			Name    string `json:"name"`
-			Check   bool   `json:"check"`
-			Ability string `json:"ability"`
-			DC      int    `json:"dc"`
-			Reason  string `json:"reason"`
-		}
-		_ = extractJSON(noewright.ResultText(step.Result), &decisions)
-		for _, d := range decisions {
-			sh := gs.byName(d.Name)
-			if !d.Check || sh == nil {
-				continue
-			}
-			r := check(*sh, d.Ability, d.DC, d.Reason)
-			rolls = append(rolls, r.Text)
-			s.post(code, round, "roll", r)
+	// One graph runs the round: the rules agent decides who needs a check, Go
+	// rolls the dice (posting each roll to the feed), the GM streams to every
+	// player, then three followers work on its narration in parallel. The
+	// opening round has no actions to check and starts at the GM.
+	var mu sync.Mutex
+	graph := tabletopRound(opening, run)
+	slugs := map[string]string{}
+	for _, n := range graph.Nodes {
+		if n.Agent != nil {
+			slugs[n.ID] = n.Agent.AgentSlug
 		}
 	}
-	if len(rolls) == 0 {
-		rolls = []string{"No checks this round."}
-	}
-
-	// 3. One Noewright turn: the GM streams to every player, then three followers
-	//    work on its narration in parallel.
-	fa := func(slug string) noewright.FlowAgent {
-		return noewright.FlowAgent{AgentSlug: slug, GeneratorOverride: run.generator, Overrides: run.overrides, Params: effort(slug)}
-	}
-	lead := fa("tt-gm")
-	lead.Stream, lead.OutputKey = true, "Narration"
-	turn, err := s.e.RunTurn(ctx, sess, noewright.TurnRequest{
-		Owner:  ttOwner,
-		Flow:   noewright.Flow{Slug: "tabletop-round", Lead: lead, Followers: []noewright.FlowAgent{fa("tt-referee"), fa("tt-chronicler"), fa("tt-suggest")}},
-		Action: &noewright.Action{Kind: noewright.ActionFreeText, Payload: map[string]any{"text": actions}},
-		Inputs: map[string]any{"Actions": actions, "Rolls": strings.Join(rolls, "\n")},
+	res, err := s.e.RunGraph(ctx, sess, noewright.GraphRequest{
+		Graph:     graph,
+		Owner:     ttOwner,
+		Action:    &noewright.Action{Kind: noewright.ActionFreeText, Payload: map[string]any{"text": actions}},
+		Inputs:    map[string]any{"Actions": actions, "Rolls": "No checks this round.", "GameCode": code, "Round": round},
+		Overrides: run.overrides,
 		// Players watch through Engine.Subscribe (see events); Noewright publishes
-		// the lead's chunks to subscribers only when the caller streams.
-		OnChunk: func(noewright.Chunk) {},
-		OnStep: func(role string, step *noewright.Step, err error) {
-			if err == nil && step != nil {
-				led.add(views(role, step))
+		// the GM's chunks to subscribers only when the caller streams.
+		OnChunk: func(string, noewright.Chunk) {},
+		OnNode: func(ev noewright.NodeEvent) {
+			if ev.Kind == noewright.NodeDone && ev.Step != nil {
+				v := views(tabletopRole(ev.Node, slugs[ev.Node]), ev.Step)
+				mu.Lock()
+				led.add(v)
+				mu.Unlock()
 			}
 		},
 	})
-	if err != nil {
+	if res == nil || res.Nodes["gm"] == nil || (err != nil && !errors.Is(err, noewright.ErrSessionNotPersisted)) {
 		s.post(code, g.Round, "system", map[string]string{"text": explain(err), "tone": "error"})
 		s.charge(g, g.Round, "failed round", &led, run.dry)
 		return
 	}
-	s.finishRound(ctx, g, sess, turn, round, "Game master (AI)", &led, run.dry)
+	s.finishRound(ctx, g, sess, roundResult{lead: res.Nodes["gm"], suggest: res.Nodes["suggest"], steps: res.Steps}, round, "Game master (AI)", &led, run.dry)
 }
 
 // finishRound records a narrated round: the feed entry, suggestions, cost,
 // the checkpoint a rewind would fork at, and cleared actions.
-func (s *server) finishRound(ctx context.Context, g *game, sess *noewright.Session, turn *noewright.Turn, round int, author string, led *ledger, dry bool) {
+// roundResult is what finishRound needs from a round, whether it ran as a
+// graph (AI game master) or as a human-led turn.
+type roundResult struct {
+	lead    *noewright.Step // the narration
+	suggest *noewright.Step // tt-suggest, when it ran
+	steps   []*noewright.Step
+}
+
+func turnResult(t *noewright.Turn) roundResult {
+	return roundResult{lead: t.Lead, suggest: t.Followers["tt-suggest"], steps: t.Steps}
+}
+
+func (s *server) finishRound(ctx context.Context, g *game, sess *noewright.Session, rr roundResult, round int, author string, led *ledger, dry bool) {
 	var suggestions map[string][]string
-	if fs, ok := turn.Followers["tt-suggest"]; ok {
-		_ = extractJSON(noewright.ResultText(fs.Result), &suggestions)
+	if rr.suggest != nil {
+		_ = extractJSON(noewright.ResultText(rr.suggest.Result), &suggestions)
 	}
 	checkpoint := 0
-	for _, x := range turn.Steps {
+	for _, x := range rr.steps {
 		checkpoint = max(checkpoint, x.Index)
 	}
 	s.post(g.Code, round, "narration", map[string]any{
-		"author": author, "text": noewright.ResultText(turn.Lead.Result), "suggestions": suggestions,
+		"author": author, "text": noewright.ResultText(rr.lead.Result), "suggestions": suggestions,
 		"summary": sess.State.Vars["summary"],
 	})
 	usd, in, out, priced := led.totals()
@@ -1219,6 +1203,9 @@ func (s *server) forward(ctx context.Context, st *stream, sid uuid.UUID, ev noew
 		return
 	}
 	role := ev.TurnRole
+	if node, ok := strings.CutPrefix(role, "node:"); ok {
+		role = tabletopRole(node, ev.Agent) // a graph round's steps carry their node
+	}
 	switch {
 	case ev.Agent == "tt-rules":
 		role = "rules"
@@ -1463,7 +1450,7 @@ func (s *server) narrate(w http.ResponseWriter, r *http.Request) {
 		platform.Error(w, http.StatusBadGateway, explain(err))
 		return
 	}
-	s.finishRound(ctx, g, sess, turn, round, "Game master", &led, run.dry)
+	s.finishRound(ctx, g, sess, turnResult(turn), round, "Game master", &led, run.dry)
 	platform.JSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
