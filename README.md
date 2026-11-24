@@ -12,6 +12,7 @@ from the browser, running on one Hetzner box behind Cloudflare.
 | `/demo/buckt` | `/api/buckt/*` | `services/go/cmd/buckt`: per-visitor buckt sandboxes | Go |
 | `/demo/noewright` | `/api/loom/*` | `services/go/cmd/loom`: multiplayer tabletop + agent pipeline | Go |
 | `/demo/forecast` | `/api/loom/desk/*` | `services/go/cmd/loom`: the Forecast Desk | Go |
+| `/demo/captions` | `/api/loom/captions/*` | `services/go/cmd/loom`: sermon captions | Go |
 | thebinaryhouse.studio`/laundryflow` | api.thebinaryhouse.studio `/api/laundryflow/*` | `laundryflow`: per-visitor sandboxes, built from the private [laundryflow](https://github.com/Rhaqim/laundryflow) repo | Go |
 | every page | `/api/feedback` | `services/go/cmd/hub`: the feedback form | Go |
 
@@ -117,6 +118,27 @@ retry. Settlement is a recorded step, so "What if?" forks before any matchday
 and replays it: same seed, same score, different bets. The backtest runs the
 strategies as plain Go over up to 500 seeded matches, no model calls.
 
+**Sermon captions.** Live captions of a sermon in Yorùbá, Igbo and Nigerian
+Pidgin (`captions.go`, `bible.go`). Per spoken line, `sc-detect` finds Bible
+references (book code, chapter, verse, and whether the speaker read the passage
+aloud, named it or paraphrased it); Go drops any reference that doesn't exist and
+looks the rest up in three bundled Bibles (`cmd/loom/bible/`, see its NOTICE:
+KJV, and Biblica's Yorùbá and Igbo translations under CC BY-SA 4.0). One
+Noewright turn then streams a clean English caption (`sc-caption`, lead) while
+`sc-yo`, `sc-ig` and `sc-pcm` translate in parallel, each handed its own
+language's Bible text. A post-hook, the scripture guard, checks that a passage
+read aloud appears word for word in each caption (in-order word coverage of at
+least 60%): a miss sends the step back once with `ErrRetryWith`, a second miss is
+let through and flagged. `sc-judge` reads all three captions, so Noewright plans it
+into the next layer, and scores each for faithfulness. The finished line is a
+recorded step (`sc-line`) whose hook appends it to the session's state; the
+follow stream (`/captions/{id}/follow`, anyone with the id) replays the service
+and forwards new lines from `Engine.Subscribe`. Without a visitor key, lines run
+on `CAPTIONS_ANTHROPIC_API_KEY` while `CAPTIONS_LINES_PER_HOUR` (all visitors)
+and `CAPTIONS_LINES_PER_VISITOR` (per day) last, then as a dry run, which shows
+the real Bible text and a guard retry but no translation. Sessions are purged
+after 7 idle days.
+
 The *Client asks for loom* doc records what the demo needed from loom; v0.0.3
 delivered all of it, and the demo's workarounds are gone. Noewright's GC runs with
 retention rules: pipeline sessions are purged after 48 idle hours, tabletop
@@ -130,7 +152,8 @@ services/go/        one Go module; internal/platform is shared plumbing
   cmd/hub           feedback API
   cmd/buckt         buckt sandbox API
   cmd/loom          engine, tabletop (game.go, rpg.go), Forecast Desk (desk.go, desk_sim.go),
-                    pipeline, dry-run generator, key check
+                    sermon captions (captions.go, bible.go, bible/), pipeline,
+                    dry-run generator, key check
 services/ussd/      Rust/actix front for ussdframework; menu.json is QuickLoan
                     (laundryflow has no directory here: CI checks out its repo
                     and builds its Dockerfile; locally, ../binaryhouse/flow/laundryflow)

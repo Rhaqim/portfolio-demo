@@ -1,5 +1,6 @@
 // Command loom is the loom demo. Visitors bring their own LLM API key and run
-// two multi-agent apps on a real Noewright engine:
+// multi-agent apps on a real Noewright engine (the Forecast Desk and sermon
+// captions are described in desk.go and captions.go):
 //
 //   - Tabletop: a solo tabletop RPG. A rules agent decides whether an action
 //     needs a dice check, Go rolls the dice, then one Noewright turn runs a
@@ -63,6 +64,11 @@ type server struct {
 
 	games  *tables           // multiplayer rooms and hosts' in-memory keys
 	misses *platform.Limiter // wrong game codes per IP
+
+	bibles    map[string]bible // sermon captions: kjv, yor, ibo
+	house     *houseKey        // the demo's own key for captions; nil when unset
+	viewers   sync.Map         // captions session -> *int64 follow streams
+	viewersMu sync.Mutex
 }
 
 const (
@@ -93,6 +99,9 @@ func main() {
 	if err := s.migrateGames(ctx); err != nil {
 		panic(err)
 	}
+	if s.bibles, err = loadBibles(); err != nil {
+		panic(err)
+	}
 
 	// Anthropic prices are first-party API list prices. OpenAI models are left
 	// unpriced on purpose: the demo shows "—" rather than invent a number.
@@ -107,7 +116,9 @@ func main() {
 		}
 	}
 
-	dry := &dryRun{}
+	s.setupHouseKey()
+
+	dry := &dryRun{bibles: s.bibles}
 	gens := map[string]noewright.Generator{dryRunSlug: dry}
 	pricing := map[string]noewright.ModelPrice{}
 	for _, m := range s.ordered {
@@ -148,6 +159,10 @@ func main() {
 		panic(err)
 	}
 	s.registerDeskHooks()
+	if err := s.seedCaptions(ctx); err != nil {
+		panic(err)
+	}
+	s.registerCaptionHooks()
 	go s.gameJanitor()
 	gcCtx, stopGC := context.WithCancel(context.Background())
 	go e.GC().Run(gcCtx)
@@ -184,6 +199,14 @@ func main() {
 	mux.HandleFunc("POST /api/loom/desk/{id}/play", s.runs.Limit(s.deskPlay))
 	mux.HandleFunc("POST /api/loom/desk/{id}/rewind", desk.Limit(s.deskRewind))
 
+	lines := platform.NewLimiter(240, time.Hour)
+	follows := platform.NewLimiter(120, time.Hour)
+	mux.HandleFunc("GET /api/loom/captions/config", s.captionsConfig)
+	mux.HandleFunc("POST /api/loom/captions", creates.Limit(s.captionsStart))
+	mux.HandleFunc("GET /api/loom/captions/{id}", s.captionsGet)
+	mux.HandleFunc("POST /api/loom/captions/{id}/line", lines.Limit(s.captionsLine))
+	mux.HandleFunc("GET /api/loom/captions/{id}/follow", follows.Limit(s.captionsFollow))
+
 	mux.HandleFunc("GET /api/loom/pipeline/preset", s.pipelinePreset)
 	mux.HandleFunc("POST /api/loom/pipeline/plan", s.pipelinePlan)
 	mux.HandleFunc("POST /api/loom/pipeline/run", s.runs.Limit(s.pipelineRun))
@@ -207,6 +230,7 @@ func gcConfig() *noewright.BranchGCConfig {
 		{Name: "pipeline-runs", Tags: []string{"pipeline"}, MaxIdle: 48 * time.Hour, Action: noewright.RetentionPurge},
 		{Name: "tabletop-games", Tags: []string{"tabletop"}, MaxIdle: 8 * 24 * time.Hour, Action: noewright.RetentionPurge},
 		{Name: "forecast-desks", Tags: []string{"forecast"}, MaxIdle: 7 * 24 * time.Hour, Action: noewright.RetentionPurge},
+		{Name: "sermon-captions", Tags: []string{"captions"}, MaxIdle: 7 * 24 * time.Hour, Action: noewright.RetentionPurge},
 	}
 	return &c
 }
@@ -241,6 +265,7 @@ type runner struct {
 	overrides map[string]any
 	model     model
 	dry       bool
+	house     bool // the demo's own key (sermon captions only)
 }
 
 var keyShape = regexp.MustCompile(`^[A-Za-z0-9_\-\.]{20,300}$`)
