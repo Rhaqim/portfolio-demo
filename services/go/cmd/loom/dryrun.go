@@ -14,7 +14,10 @@ import (
 // engine, hooks, layering, budgets and cost ledger all run for real; only the
 // model text is canned. For visitor-built pipelines it echoes the rendered
 // prompt, which makes the data flow between agents visible.
-type dryRun struct{ e *noewright.Engine }
+type dryRun struct {
+	e      *noewright.Engine
+	bibles map[string]bible
+}
 
 var _ noewright.StreamingGenerator = (*dryRun)(nil)
 
@@ -109,6 +112,21 @@ func (d *dryRun) reply(ctx context.Context, req noewright.GenerateRequest) strin
 	case "fd-commentator":
 		res, _ := req.Inputs["Result"].(string)
 		return fmt.Sprintf("(Dry run) Full time: %s. Somebody read that right and somebody will be rewinding it.", res)
+	case "sc-detect":
+		line, _ := req.Inputs["Line"].(string)
+		refs := detectRefs(line, d.bibles["kjv"])
+		if refs == nil {
+			refs = []scriptureRef{}
+		}
+		b, _ := json.Marshal(map[string]any{"refs": refs})
+		return string(b)
+	case "sc-caption":
+		line, _ := req.Inputs["Line"].(string)
+		return line
+	case "sc-yo", "sc-ig", "sc-pcm":
+		return dryCaption(slug, req)
+	case "sc-judge":
+		return `{"yo": {"score": 0, "confidence": "low", "note": "dry run: no judge was called"}, "ig": {"score": 0, "confidence": "low", "note": "dry run: no judge was called"}, "pcm": {"score": 0, "confidence": "low", "note": "dry run: no judge was called"}}`
 	case "tt-npc":
 		n, _ := req.Inputs["NpcName"].(string)
 		return fmt.Sprintf("(Dry run) %s looks you over and says, \"Not here. Not with the tide coming in.\"", n)
@@ -128,6 +146,33 @@ func names(v any) []string {
 		if n, _, ok := strings.Cut(line, ":"); ok && !strings.HasPrefix(strings.TrimSpace(n), "(") {
 			out = append(out, strings.TrimSpace(n))
 		}
+	}
+	return out
+}
+
+// dryCaption stands in for a translator without a model. It never invents a
+// translation: it shows the Bible text the real agent is given for a passage
+// read aloud, and a placeholder for the rest. The Igbo stand-in leaves the
+// passage out on its first try, so a dry run shows the scripture guard
+// rejecting it and the retry passing.
+func dryCaption(slug string, req noewright.GenerateRequest) string {
+	code := strings.TrimPrefix(slug, "sc-")
+	name := code
+	for _, l := range captionLangs {
+		if l.Code == code {
+			name = l.Name
+		}
+	}
+	var must []struct{ Label, Text string }
+	if raw, _ := req.Inputs["Guard"].(string); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &must)
+	}
+	out := fmt.Sprintf("(Dry run · %s) [the %s caption of this line appears here when a model runs]", name, name)
+	if code == "ig" && len(req.Annotations) == 0 && len(must) > 0 {
+		return out
+	}
+	for _, p := range must {
+		out += " " + p.Text
 	}
 	return out
 }

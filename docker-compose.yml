@@ -61,6 +61,12 @@ services:
     environment:
       <<: *shared-db
       OPENAI_MODELS: ${OPENAI_MODELS:-gpt-5-mini,gpt-5}
+      # Sermon captions: with a key, a visitor's first lines run on the demo's
+      # own key (capped per hour and per visitor); without one, a dry run.
+      CAPTIONS_ANTHROPIC_API_KEY: ${CAPTIONS_ANTHROPIC_API_KEY:-}
+      CAPTIONS_MODEL: ${CAPTIONS_MODEL:-anthropic/claude-sonnet-5-5}
+      CAPTIONS_LINES_PER_HOUR: ${CAPTIONS_LINES_PER_HOUR:-120}
+      CAPTIONS_LINES_PER_VISITOR: ${CAPTIONS_LINES_PER_VISITOR:-30}
     volumes: [demo_data:/data]
     mem_limit: 256m
 

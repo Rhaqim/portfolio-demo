@@ -16,7 +16,7 @@ import (
 	"github.com/rhaqim/demo/internal/platform"
 )
 
-var demos = map[string]bool{"ussd": true, "buckt": true, "loom": true, "general": true}
+var demos = map[string]bool{"ussd": true, "buckt": true, "loom": true, "captions": true, "general": true}
 
 type server struct {
 	db         *sql.DB
