@@ -4,12 +4,15 @@ package main
 // HTTP API in dry-run mode.
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 func (h *harness) postH(path string, body any, headers map[string]string) (int, []byte) {
@@ -185,5 +188,20 @@ func TestCaptionLineRunsAsAGraph(t *testing.T) {
 	resp.Body.Close()
 	if len(svc.Lines) != 3 || svc.Lines[2].N != 3 {
 		t.Fatalf("after three lines: %d lines", len(svc.Lines))
+	}
+	// Every line was judged, outside the line's run, and the scores reached
+	// the service; the judge reuses one scratch session.
+	for _, l := range svc.Lines {
+		if len(l.Judge) == 0 {
+			t.Fatalf("line %d has no judge scores", l.N)
+		}
+	}
+	id, _ := uuid.Parse(svc.ID)
+	sess, err := h.s.e.Sessions().GetHeader(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if js, _ := sess.State.Vars["judge_session"].(string); js == "" {
+		t.Fatalf("no judge session saved: vars %v", sess.State.Vars)
 	}
 }

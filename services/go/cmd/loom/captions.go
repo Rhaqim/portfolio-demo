@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -503,6 +504,8 @@ func (s *server) captionsLine(w http.ResponseWriter, r *http.Request) {
 		platform.Error(w, http.StatusTooManyRequests, err.Error())
 		return
 	}
+	var once sync.Once
+	release = func(r func()) func() { return func() { once.Do(r) } }(release)
 	defer release()
 	// A line that waited for the previous one must start from the session as
 	// that line left it, not as it was when this request arrived.
@@ -521,7 +524,7 @@ func (s *server) captionsLine(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.runCaptionLine(ctx, st, sess, spoken, runs, def, &lineClock{t0: t0, waited: waited})
+	s.runCaptionLine(ctx, st, sess, spoken, runs, def, &lineClock{t0: t0, waited: waited}, vid, release)
 }
 
 // captionsFollow is the congregation's view: the service's lines so far, then

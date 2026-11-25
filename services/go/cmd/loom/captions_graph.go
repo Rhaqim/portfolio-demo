@@ -3,14 +3,18 @@ package main
 // captions_graph.go — a captioned line as one Noewright graph.
 //
 //	          ┌─ detect ─▶ lookup (Go) ─┐
-//	start ────┤                          ├─▶ yo, ig, pcm ─▶ line (Go, recorded sc-line) ─▶ judge ─▶ score (Go, recorded sc-score)
+//	start ────┤                          ├─▶ yo, ig, pcm ─▶ line (Go, recorded sc-line)
 //	          └─ caption (streams) ─────┘
+//
+//	then, after the session is released:  judge ─▶ score (recorded sc-score)
 //
 // The English caption needs only the spoken line, so it streams at once,
 // alongside the detector. The translators start when both have finished. The
 // line goes to the speaker and every follower as soon as the translations
-// are in; the judge scores it afterwards and its scores follow. Each agent can
-// run on its own model and key.
+// are in, and the line's run ends there, releasing the service for the next
+// line. The judge then runs as its own one-node graph in a scratch session,
+// and its scores are recorded on the service afterwards. Each agent can run
+// on its own model and key.
 
 import (
 	"context"
@@ -23,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rhaqim/noewright"
 )
 
@@ -71,10 +76,7 @@ func captionGraph(runs map[string]runner) noewright.Graph {
 		translators = append(translators, l.Code)
 	}
 	nodes = append(nodes,
-		noewright.GraphNode{ID: "line", Kind: noewright.NodeFunc, Func: "sc-make-line", Record: "sc-line", OutputKey: "LineJSON"},
-		agent("judge", "sc-judge", "Judge"),
-		noewright.GraphNode{ID: "score", Kind: noewright.NodeFunc, Func: "sc-score-line", Record: "sc-score"},
-	)
+		noewright.GraphNode{ID: "line", Kind: noewright.NodeFunc, Func: "sc-make-line", Record: "sc-line", OutputKey: "LineJSON"})
 	edges := []noewright.GraphEdge{
 		{From: "start", To: []string{"detect", "caption"}},
 		{From: "detect", To: []string{"lookup"}},
@@ -84,18 +86,28 @@ func captionGraph(runs map[string]runner) noewright.Graph {
 	for _, t := range translators {
 		edges = append(edges, noewright.GraphEdge{From: t, To: []string{"line"}})
 	}
-	edges = append(edges,
-		noewright.GraphEdge{From: "line", To: []string{"judge"}},
-		noewright.GraphEdge{From: "judge", To: []string{"score"}},
-	)
 	return noewright.Graph{Slug: "sermon-captions", Entry: "start", Inputs: []string{"Spoken", "Previous", "DryRun"},
 		Nodes: nodes, Edges: edges}
+}
+
+// judgeGraph scores a line once it is on screen. It runs in the service's
+// scratch session, so a slow judge never holds up the next line.
+func judgeGraph(runs map[string]runner) noewright.Graph {
+	r := runs["sc-judge"]
+	return noewright.Graph{Slug: "sermon-captions-judge", Entry: "judge", Nodes: []noewright.GraphNode{
+		{ID: "judge", Kind: noewright.NodeAgent, Agent: &noewright.FlowAgent{AgentSlug: "sc-judge", OutputKey: "Judge",
+			GeneratorOverride: r.generator, Overrides: r.overrides, Params: map[string]any{"effort": "low"}, MaxRetries: 1}},
+	}}
 }
 
 // captionShape is the graph for the page to draw: the same builder, so the
 // diagram is always what runs.
 func captionShape() map[string]any {
 	g := captionGraph(map[string]runner{})
+	// The judge's run follows the line's; draw them as one picture.
+	g.Nodes = append(g.Nodes, judgeGraph(map[string]runner{}).Nodes[0],
+		noewright.GraphNode{ID: "score", Kind: noewright.NodeFunc})
+	g.Edges = append(g.Edges, noewright.GraphEdge{From: "line", To: []string{"judge"}}, noewright.GraphEdge{From: "judge", To: []string{"score"}})
 	type node struct {
 		ID    string `json:"id"`
 		Kind  string `json:"kind"`
@@ -191,21 +203,6 @@ func (s *server) registerCaptionGraph() {
 			}
 		}
 		b, _ := json.Marshal(line)
-		return noewright.FuncResult{Text: string(b)}, nil
-	})
-
-	// score turns the judge's reply into scores for the line; recorded as
-	// sc-score, the captions-state hook attaches them to the stored line.
-	s.e.RegisterFunc("sc-score-line", func(_ context.Context, call noewright.FuncCall) (noewright.FuncResult, error) {
-		var line captionLine
-		raw, _ := call.Inputs["LineJSON"].(string)
-		if err := json.Unmarshal([]byte(raw), &line); err != nil {
-			return noewright.FuncResult{}, errors.New("the line to score is missing")
-		}
-		judge := map[string]judgeScore{}
-		text, _ := call.Inputs["Judge"].(string)
-		_ = extractJSON(text, &judge)
-		b, _ := json.Marshal(map[string]any{"n": line.N, "judge": judge})
 		return noewright.FuncResult{Text: string(b)}, nil
 	})
 
@@ -356,9 +353,11 @@ func (c *lineClock) stamp(v *stepView, node string) {
 	}
 }
 
-// runCaptionLine runs one line's graph and streams it to the speaker.
+// runCaptionLine runs one line's graph and streams it to the speaker. It
+// holds the visitor's lock (release) until the line is on screen, then
+// releases it and runs the judge.
 func (s *server) runCaptionLine(ctx context.Context, st *stream, sess *noewright.Session, spoken string,
-	runs map[string]runner, def runner, clock *lineClock) {
+	runs map[string]runner, def runner, clock *lineClock, vid string, release func()) {
 	c := loadCaptions(&sess.State)
 	previous := ""
 	if n := len(c.Lines); n > 0 {
@@ -369,6 +368,11 @@ func (s *server) runCaptionLine(ctx context.Context, st *stream, sess *noewright
 	}
 	for _, l := range captionLangs {
 		delete(sess.State.Vars, "guard_"+l.Code)
+	}
+	scratch, err := s.judgeSession(ctx, sess, vid)
+	if err != nil {
+		st.fail(err)
+		return
 	}
 
 	allDry := true
@@ -394,11 +398,11 @@ func (s *server) runCaptionLine(ctx context.Context, st *stream, sess *noewright
 	st.send("session", map[string]any{"session_id": sess.ID, "dry_run": allDry, "house": def.house, "model": label, "agents": agents,
 		"waited_ms": int(clock.waited.Milliseconds()), "at_ms": clock.ms(time.Now())})
 
-	agentOf := map[string]string{}
-	for _, a := range captionGraphAgents {
-		agentOf[a.Node] = a.Agent
-	}
-	_, err := s.e.RunGraph(ctx, sess, noewright.GraphRequest{
+	// What the judge reads, gathered as the line's nodes finish.
+	var mu sync.Mutex
+	judgeIn := map[string]any{}
+	var line *captionLine
+	_, err = s.e.RunGraph(ctx, sess, noewright.GraphRequest{
 		Graph:  captionGraph(runs),
 		Owner:  ttOwner,
 		Inputs: map[string]any{"Line": spoken, "Spoken": spoken, "Previous": previous, "DryRun": allDry},
@@ -408,51 +412,141 @@ func (s *server) runCaptionLine(ctx context.Context, st *stream, sess *noewright
 				st.send("chunk", map[string]string{"text": ch.Content})
 			}
 		},
-		OnNode: func(ev noewright.NodeEvent) {
-			nv := map[string]any{"node": ev.Node, "kind": ev.Kind, "agent": agentOf[ev.Node], "at_ms": clock.ms(time.Now())}
-			if ev.Kind == noewright.NodeStarted {
-				nv["at_ms"] = clock.started(ev.Node)
-			}
-			if ev.Err != nil {
-				nv["error"] = explain(ev.Err)
-			}
-			st.send("node", nv)
+		OnNode: s.captionNodes(ctx, st, clock, sess.ID, func(ev noewright.NodeEvent) {
+			mu.Lock()
+			defer mu.Unlock()
 			switch {
-			case ev.Kind == noewright.NodeFailed && agentOf[ev.Node] != "":
-				v := stepView{Role: ev.Node, Agent: agentOf[ev.Node], Error: explain(ev.Err)}
-				clock.stamp(&v, ev.Node)
-				st.send("step", v)
-			case ev.Kind != noewright.NodeDone:
 			case ev.Node == "lookup":
-				var p lookupPayload
-				if json.Unmarshal([]byte(ev.Text), &p) == nil {
-					st.send("scripture", p.Refs)
+				judgeIn["Scripture"] = ev.Text
+			case ev.Node == "caption":
+				judgeIn["Caption"] = ev.Text
+			case isCaptionLang(ev.Node):
+				for _, l := range captionLangs {
+					if l.Code == ev.Node {
+						judgeIn[l.Key] = strings.TrimSpace(ev.Text)
+					}
 				}
 			case ev.Node == "line":
-				var line captionLine
-				if json.Unmarshal([]byte(ev.Text), &line) == nil {
-					st.send("line", line)
-				}
-			case ev.Node == "score":
-				var sc map[string]any
-				if json.Unmarshal([]byte(ev.Text), &sc) == nil {
-					st.send("judge", sc)
-				}
-			case ev.Step != nil && agentOf[ev.Node] != "":
-				v := s.viewStep(ctx, ev.Node, ev.Step)
-				applyCost(&v, ev.Step, s.costs(ctx, sess.ID))
-				clock.stamp(&v, ev.Node)
-				st.send("step", v)
-				if isCaptionLang(ev.Node) {
-					st.send("caption", map[string]string{"lang": ev.Node, "text": strings.TrimSpace(ev.Text)})
+				var ln captionLine
+				if json.Unmarshal([]byte(ev.Text), &ln) == nil {
+					line = &ln
+					st.send("line", ln)
 				}
 			}
-		},
+		}),
 	})
+	release() // the next line can start now; the judge doesn't need the service
 	if err != nil && !errors.Is(err, noewright.ErrSessionNotPersisted) {
 		slog.Error("captions line", "session", sess.ID, "err", err)
 		st.fail(err)
 		return
 	}
+	if line != nil {
+		s.judgeLine(ctx, st, clock, sess.ID, scratch, vid, runs, judgeIn, line.N)
+	}
 	st.send("done", map[string]any{"ok": true, "total_ms": clock.ms(time.Now())})
+}
+
+// captionNodes forwards a run's node events to the speaker: progress with
+// its time on the line's clock, each agent's step, the scripture found, and
+// each caption. done sees every finished node.
+func (s *server) captionNodes(ctx context.Context, st *stream, clock *lineClock, costsOf uuid.UUID, done func(noewright.NodeEvent)) func(noewright.NodeEvent) {
+	agentOf := map[string]string{}
+	for _, a := range captionGraphAgents {
+		agentOf[a.Node] = a.Agent
+	}
+	return func(ev noewright.NodeEvent) {
+		nv := map[string]any{"node": ev.Node, "kind": ev.Kind, "agent": agentOf[ev.Node], "at_ms": clock.ms(time.Now())}
+		if ev.Kind == noewright.NodeStarted {
+			nv["at_ms"] = clock.started(ev.Node)
+		}
+		if ev.Err != nil {
+			nv["error"] = explain(ev.Err)
+		}
+		st.send("node", nv)
+		switch {
+		case ev.Kind == noewright.NodeFailed && agentOf[ev.Node] != "":
+			v := stepView{Role: ev.Node, Agent: agentOf[ev.Node], Error: explain(ev.Err)}
+			clock.stamp(&v, ev.Node)
+			st.send("step", v)
+			return
+		case ev.Kind != noewright.NodeDone:
+			return
+		case ev.Node == "lookup":
+			var p lookupPayload
+			if json.Unmarshal([]byte(ev.Text), &p) == nil {
+				st.send("scripture", p.Refs)
+			}
+		case ev.Step != nil && agentOf[ev.Node] != "":
+			v := s.viewStep(ctx, ev.Node, ev.Step)
+			applyCost(&v, ev.Step, s.costs(ctx, costsOf))
+			clock.stamp(&v, ev.Node)
+			st.send("step", v)
+			if isCaptionLang(ev.Node) {
+				st.send("caption", map[string]string{"lang": ev.Node, "text": strings.TrimSpace(ev.Text)})
+			}
+		}
+		done(ev)
+	}
+}
+
+// judgeSession returns the service's scratch session, where its judge runs,
+// creating it on first use. sess is held under the visitor's lock, and the
+// line's run saves the id with the service.
+func (s *server) judgeSession(ctx context.Context, sess *noewright.Session, vid string) (*noewright.Session, error) {
+	if raw, _ := sess.State.Vars["judge_session"].(string); raw != "" {
+		if id, err := uuid.Parse(raw); err == nil {
+			if js, err := s.e.Sessions().GetHeader(ctx, id); err == nil {
+				return js, nil
+			}
+		}
+	}
+	js := &noewright.Session{PlatformID: vid, Tags: []string{"captions", "captions-judge"},
+		State: noewright.State{Modality: noewright.ModalityText, Vars: map[string]any{}}}
+	if err := s.e.Sessions().Create(ctx, js); err != nil {
+		return nil, errors.New("couldn't set up the judge")
+	}
+	sess.State.Vars["judge_session"] = js.ID.String()
+	return js, nil
+}
+
+// judgeLine scores line n in the scratch session, sends the scores to the
+// speaker at once, then records them on the service (taking the visitor's
+// lock briefly, after any line in flight) so followers and history get them.
+func (s *server) judgeLine(ctx context.Context, st *stream, clock *lineClock, service uuid.UUID, scratch *noewright.Session,
+	vid string, runs map[string]runner, in map[string]any, n int) {
+	var text string
+	_, err := s.e.RunGraph(ctx, scratch, noewright.GraphRequest{
+		Graph: judgeGraph(runs), Owner: ttOwner, Inputs: in, Restart: true,
+		OnNode: s.captionNodes(ctx, st, clock, scratch.ID, func(ev noewright.NodeEvent) { text = ev.Text }),
+	})
+	if err != nil && !errors.Is(err, noewright.ErrSessionNotPersisted) || text == "" {
+		if err != nil {
+			slog.Warn("captions judge", "session", service, "err", err)
+		}
+		return
+	}
+	judge := map[string]judgeScore{}
+	_ = extractJSON(text, &judge)
+	sc := map[string]any{"n": n, "judge": judge}
+	b, _ := json.Marshal(sc)
+	st.send("node", map[string]any{"node": "score", "kind": noewright.NodeDone, "at_ms": clock.ms(time.Now())})
+	st.send("judge", sc)
+
+	wait, stop := context.WithTimeout(ctx, 90*time.Second)
+	release, err := s.acquireWait(wait, vid)
+	stop()
+	if err != nil {
+		slog.Warn("captions judge: scores not saved", "session", service, "err", err)
+		return
+	}
+	defer release()
+	sess, err := s.e.Sessions().GetHeader(ctx, service)
+	if err == nil {
+		_, err = s.e.RecordStep(ctx, sess, noewright.ExternalStep{AgentSlug: "sc-score", Owner: ttOwner, Author: "judge",
+			Result: noewright.NewTextResult(string(b), "stop", 0, 0)})
+	}
+	if err != nil && !errors.Is(err, noewright.ErrSessionNotPersisted) {
+		slog.Warn("captions judge: scores not saved", "session", service, "err", err)
+	}
 }
