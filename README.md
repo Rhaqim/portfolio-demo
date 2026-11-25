@@ -353,5 +353,5 @@ replay what they missed from the feed.
   a menu error once.
 - **Noewright** `v0.1.0` (`github.com/rhaqim/noewright`, formerly
   `github.com/rhaqim/loom`), with its Anthropic adapter at
-  `github.com/rhaqim/noewright/generator/anthropic` `v0.1.0`. Both are tagged,
+  `github.com/rhaqim/noewright/generator/anthropic` `v0.2.0`. Both are tagged,
   so `make bump-noewright v=<version>` moves them together.
