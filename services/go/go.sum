@@ -116,8 +116,8 @@ github.com/pb33f/ordered-map/v2 v2.3.2/go.mod h1:1OhFrXu3OYw3kM+FXF+Ug3ugmmZ9LE8
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
-github.com/rhaqim/noewright v0.1.1-0.20261125002555-71187b8e0b12 h1:SJXlfq3DMi2dRLQGJeZ9Ug6yoi9Su9/Bh/P3xARm8Bc=
-github.com/rhaqim/noewright v0.1.1-0.20261125002555-71187b8e0b12/go.mod h1:HRQYnnu+/wWZ7bcUZo+6Tcxy9KcpANuJ6oNFCsSQEQc=
+github.com/rhaqim/noewright v0.1.1-0.20261125133600-2bf933cefead h1:OuOyJ9Cp10XyRyhDnyiQZUGxD61mSVMIgnSSWb0vo2I=
+github.com/rhaqim/noewright v0.1.1-0.20261125133600-2bf933cefead/go.mod h1:HRQYnnu+/wWZ7bcUZo+6Tcxy9KcpANuJ6oNFCsSQEQc=
 github.com/rhaqim/noewright/generator/anthropic v0.1.0 h1:3E/dWqKJTgSJl5m2vc53M/s0wKWVownVLysPJXufEX4=
 github.com/rhaqim/noewright/generator/anthropic v0.1.0/go.mod h1:bb1w1zm4ZO6yZbsK4IufGQXMYnJEJa6ZrBWfN3bp9z8=
 github.com/rogpeppe/go-internal v1.14.1 h1:UQB4HGPB6osV0SQTLymcB4TgvyWu6ZyliaW0tI/otEQ=
