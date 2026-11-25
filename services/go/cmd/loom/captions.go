@@ -492,9 +492,13 @@ func (s *server) captionsLine(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	vid := platform.Visitor(r)
+	// t0 starts the line's clock: the timings the page shows count from here,
+	// so a line held up by the previous line's judge says so.
+	t0 := time.Now()
 	wait, stopWait := context.WithTimeout(r.Context(), 90*time.Second)
 	release, err := s.acquireWait(wait, vid)
 	stopWait()
+	waited := time.Since(t0)
 	if err != nil {
 		platform.Error(w, http.StatusTooManyRequests, err.Error())
 		return
@@ -517,7 +521,7 @@ func (s *server) captionsLine(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	s.runCaptionLine(ctx, st, sess, spoken, runs, def)
+	s.runCaptionLine(ctx, st, sess, spoken, runs, def, &lineClock{t0: t0, waited: waited})
 }
 
 // captionsFollow is the congregation's view: the service's lines so far, then

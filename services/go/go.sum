@@ -118,6 +118,8 @@ github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
 github.com/rhaqim/noewright v0.1.1-0.20261125133600-2bf933cefead h1:OuOyJ9Cp10XyRyhDnyiQZUGxD61mSVMIgnSSWb0vo2I=
 github.com/rhaqim/noewright v0.1.1-0.20261125133600-2bf933cefead/go.mod h1:HRQYnnu+/wWZ7bcUZo+6Tcxy9KcpANuJ6oNFCsSQEQc=
+github.com/rhaqim/noewright v0.1.1-0.20261125135053-c827b8864673 h1:Vc5a84jzmQYvyI2QijEA/E1Ou5vVt4Y/hXGlq8cmEfA=
+github.com/rhaqim/noewright v0.1.1-0.20261125135053-c827b8864673/go.mod h1:HRQYnnu+/wWZ7bcUZo+6Tcxy9KcpANuJ6oNFCsSQEQc=
 github.com/rhaqim/noewright/generator/anthropic v0.1.0 h1:3E/dWqKJTgSJl5m2vc53M/s0wKWVownVLysPJXufEX4=
 github.com/rhaqim/noewright/generator/anthropic v0.1.0/go.mod h1:bb1w1zm4ZO6yZbsK4IufGQXMYnJEJa6ZrBWfN3bp9z8=
 github.com/rogpeppe/go-internal v1.14.1 h1:UQB4HGPB6osV0SQTLymcB4TgvyWu6ZyliaW0tI/otEQ=

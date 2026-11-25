@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rhaqim/noewright"
@@ -305,9 +306,59 @@ func (s *server) acquireWait(ctx context.Context, vid string) (func(), error) {
 	}
 }
 
+// lineClock times one line: t0 is when its request arrived, waited how long
+// it queued behind the previous line (which holds the visitor's lock until
+// its judge is done).
+type lineClock struct {
+	t0     time.Time
+	waited time.Duration
+
+	mu    sync.Mutex
+	start map[string]time.Time // node → when it started
+	first map[string]time.Time // node → its first streamed token
+}
+
+func (c *lineClock) ms(t time.Time) int { return int(t.Sub(c.t0).Milliseconds()) }
+
+func (c *lineClock) started(node string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.start == nil {
+		c.start = map[string]time.Time{}
+	}
+	now := time.Now()
+	c.start[node] = now
+	return c.ms(now)
+}
+
+func (c *lineClock) token(node string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.first == nil {
+		c.first = map[string]time.Time{}
+	}
+	if _, ok := c.first[node]; !ok {
+		c.first[node] = time.Now()
+	}
+}
+
+// stamp fills a step view's timing for node, which has just finished.
+func (c *lineClock) stamp(v *stepView, node string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st, ok := c.start[node]
+	if !ok {
+		return
+	}
+	v.StartMs, v.WallMs = c.ms(st), int(time.Since(st).Milliseconds())
+	if f, ok := c.first[node]; ok {
+		v.FirstTokenMs = int(f.Sub(st).Milliseconds())
+	}
+}
+
 // runCaptionLine runs one line's graph and streams it to the speaker.
 func (s *server) runCaptionLine(ctx context.Context, st *stream, sess *noewright.Session, spoken string,
-	runs map[string]runner, def runner) {
+	runs map[string]runner, def runner, clock *lineClock) {
 	c := loadCaptions(&sess.State)
 	previous := ""
 	if n := len(c.Lines); n > 0 {
@@ -340,7 +391,8 @@ func (s *server) runCaptionLine(ctx context.Context, st *stream, sess *noewright
 	if def.house {
 		label += " (the demo's key)"
 	}
-	st.send("session", map[string]any{"session_id": sess.ID, "dry_run": allDry, "house": def.house, "model": label, "agents": agents})
+	st.send("session", map[string]any{"session_id": sess.ID, "dry_run": allDry, "house": def.house, "model": label, "agents": agents,
+		"waited_ms": int(clock.waited.Milliseconds()), "at_ms": clock.ms(time.Now())})
 
 	agentOf := map[string]string{}
 	for _, a := range captionGraphAgents {
@@ -351,19 +403,25 @@ func (s *server) runCaptionLine(ctx context.Context, st *stream, sess *noewright
 		Owner:  ttOwner,
 		Inputs: map[string]any{"Line": spoken, "Spoken": spoken, "Previous": previous, "DryRun": allDry},
 		OnChunk: func(node string, ch noewright.Chunk) {
+			clock.token(node)
 			if node == "caption" {
 				st.send("chunk", map[string]string{"text": ch.Content})
 			}
 		},
 		OnNode: func(ev noewright.NodeEvent) {
-			nv := map[string]any{"node": ev.Node, "kind": ev.Kind, "agent": agentOf[ev.Node]}
+			nv := map[string]any{"node": ev.Node, "kind": ev.Kind, "agent": agentOf[ev.Node], "at_ms": clock.ms(time.Now())}
+			if ev.Kind == noewright.NodeStarted {
+				nv["at_ms"] = clock.started(ev.Node)
+			}
 			if ev.Err != nil {
 				nv["error"] = explain(ev.Err)
 			}
 			st.send("node", nv)
 			switch {
 			case ev.Kind == noewright.NodeFailed && agentOf[ev.Node] != "":
-				st.send("step", stepView{Role: ev.Node, Agent: agentOf[ev.Node], Error: explain(ev.Err)})
+				v := stepView{Role: ev.Node, Agent: agentOf[ev.Node], Error: explain(ev.Err)}
+				clock.stamp(&v, ev.Node)
+				st.send("step", v)
 			case ev.Kind != noewright.NodeDone:
 			case ev.Node == "lookup":
 				var p lookupPayload
@@ -383,6 +441,7 @@ func (s *server) runCaptionLine(ctx context.Context, st *stream, sess *noewright
 			case ev.Step != nil && agentOf[ev.Node] != "":
 				v := s.viewStep(ctx, ev.Node, ev.Step)
 				applyCost(&v, ev.Step, s.costs(ctx, sess.ID))
+				clock.stamp(&v, ev.Node)
 				st.send("step", v)
 				if isCaptionLang(ev.Node) {
 					st.send("caption", map[string]string{"lang": ev.Node, "text": strings.TrimSpace(ev.Text)})
@@ -395,5 +454,5 @@ func (s *server) runCaptionLine(ctx context.Context, st *stream, sess *noewright
 		st.fail(err)
 		return
 	}
-	st.send("done", map[string]bool{"ok": true})
+	st.send("done", map[string]any{"ok": true, "total_ms": clock.ms(time.Now())})
 }

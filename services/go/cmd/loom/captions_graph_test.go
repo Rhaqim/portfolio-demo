@@ -98,6 +98,33 @@ func TestCaptionLineRunsAsAGraph(t *testing.T) {
 	if at("line") < 0 || at("judge") < 0 || at("line") > at("judge") || at("chunk") < 0 {
 		t.Fatalf("line at %d, judge at %d, chunk at %d", at("line"), at("judge"), at("chunk"))
 	}
+	// Every node event carries its time on the line's clock, and the run's
+	// total comes with done, so the page can draw where the time went.
+	atMs := map[string]int{}
+	for _, ev := range evs {
+		if ev.Event != "node" {
+			continue
+		}
+		var n struct {
+			Node, Kind string
+			AtMs       *int `json:"at_ms"`
+		}
+		_ = json.Unmarshal(ev.Data, &n)
+		if n.AtMs == nil {
+			t.Fatalf("node event without at_ms: %s", ev.Data)
+		}
+		atMs[n.Node+"/"+n.Kind] = *n.AtMs
+	}
+	if atMs["yo/started"] < atMs["caption/done"] {
+		t.Fatalf("yo started at %dms, before caption finished at %dms", atMs["yo/started"], atMs["caption/done"])
+	}
+	var done struct {
+		TotalMs *int `json:"total_ms"`
+	}
+	_ = json.Unmarshal(evs[at("done")].Data, &done)
+	if done.TotalMs == nil || *done.TotalMs < atMs["line/done"] {
+		t.Fatalf("done total_ms = %v, line done at %dms", done.TotalMs, atMs["line/done"])
+	}
 	captions := 0
 	for _, ev := range evs {
 		if ev.Event == "caption" {
