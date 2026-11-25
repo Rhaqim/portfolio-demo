@@ -165,6 +165,10 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 			out = append(out, x)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		platform.Error(w, http.StatusInternalServerError, "couldn't read feedback")
+		return
+	}
 	platform.JSON(w, http.StatusOK, out)
 }
 

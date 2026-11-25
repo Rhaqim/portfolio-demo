@@ -187,6 +187,9 @@ func TestTabletopRoundRunsAsAGraph(t *testing.T) {
 			_ = rows.Scan(&p)
 			out = append(out, p)
 		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
 		return out
 	}
 	waitFor := func(round int) {

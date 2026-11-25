@@ -271,7 +271,7 @@ func (s *server) players(ctx context.Context, code string) ([]playerRow, error) 
 			out = append(out, p)
 		}
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
 // post appends a feed entry and broadcasts it. The feed is what late joiners
@@ -875,6 +875,9 @@ func (s *server) view(ctx context.Context, code string) (*gameView, error) {
 				v.Rounds = append(v.Rounds, rc)
 			}
 		}
+		if err := rows.Err(); err != nil {
+			slog.Warn("round costs", "game", code, "err", err)
+		}
 		rows.Close()
 	}
 	return v, nil
@@ -1198,6 +1201,9 @@ func (s *server) events(w http.ResponseWriter, r *http.Request) {
 				st.sendID(it.Seq, "feed", it)
 				sent = it.Seq
 			}
+		}
+		if err := rows.Err(); err != nil {
+			slog.Warn("feed replay", "game", g.Code, "err", err)
 		}
 		rows.Close()
 	}
@@ -1802,6 +1808,9 @@ func (s *server) gameJanitor() {
 				if rows.Scan(&c) == nil {
 					codes = append(codes, c)
 				}
+			}
+			if err := rows.Err(); err != nil {
+				slog.Warn("janitor: stale games", "err", err)
 			}
 			rows.Close()
 			for _, c := range codes {
