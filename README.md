@@ -157,17 +157,22 @@ strategies as plain Go over up to 500 seeded matches, no model calls.
 **Sermon captions.** Live captions of a sermon in Yorùbá, Igbo and Nigerian
 Pidgin (`captions.go`, `bible.go`). Per spoken line, `sc-detect` finds Bible
 references (book code, chapter, verse, and whether the speaker read the passage
-aloud, named it or paraphrased it); Go drops any reference that doesn't exist and
-looks the rest up in three bundled Bibles (`cmd/loom/bible/`, see its NOTICE:
-KJV, and Biblica's Yorùbá and Igbo translations under CC BY-SA 4.0). One
-Noewright turn then streams a clean English caption (`sc-caption`, lead) while
-`sc-yo`, `sc-ig` and `sc-pcm` translate in parallel, each handed its own
-language's Bible text. A post-hook, the scripture guard, checks that a passage
+aloud, named it or paraphrased it); a Go function node drops any reference that
+doesn't exist and looks the rest up in three bundled Bibles (`cmd/loom/bible/`,
+see its NOTICE: KJV, and Biblica's Yorùbá and Igbo translations under CC BY-SA
+4.0). Each line is one Noewright graph (`captions_graph.go`): the English caption
+(`sc-caption`) needs only the spoken line, so it streams at once, in parallel
+with the detector; `sc-yo`, `sc-ig` and `sc-pcm` start when both are done, each
+handed its own language's Bible text by a pre-hook. A visitor can run every agent
+on one model and key, or pick a model per agent (keys per provider, in
+`X-LLM-Key-Anthropic` / `X-LLM-Key-OpenAI`); an agent without a key for its
+provider runs dry. A post-hook, the scripture guard, checks that a passage
 read aloud appears word for word in each caption (in-order word coverage of at
 least 60%): a miss sends the step back once with `ErrRetryWith`, a second miss is
-let through and flagged. `sc-judge` reads all three captions, so Noewright plans it
-into the next layer, and scores each for faithfulness. The finished line is a
-recorded step (`sc-line`) whose hook appends it to the session's state; the
+let through and flagged. The finished line is recorded (`sc-line`) and
+reaches the screen before `sc-judge` scores it: the scores follow in a recorded
+`sc-score` step, so the judge no longer delays the line. A line sent while the
+previous one is still being scored waits for it. The line step (`sc-line`) whose hook appends it to the session's state; the
 follow stream (`/captions/{id}/follow`, anyone with the id) replays the service
 and forwards new lines from `Engine.Subscribe`. Without a visitor key, lines run
 on `CAPTIONS_ANTHROPIC_API_KEY` while `CAPTIONS_LINES_PER_HOUR` (all visitors)

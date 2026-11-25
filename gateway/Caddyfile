@@ -35,7 +35,7 @@
 	}
 	handle @preflight {
 		header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
-		header Access-Control-Allow-Headers "Authorization, Content-Type, X-LLM-Key, X-LLM-Model, Last-Event-ID"
+		header Access-Control-Allow-Headers "Authorization, Content-Type, X-LLM-Key, X-LLM-Key-Anthropic, X-LLM-Key-OpenAI, X-LLM-Model, Last-Event-ID"
 		header Access-Control-Max-Age "600"
 		respond 204
 	}
@@ -57,6 +57,8 @@
 				# The loom demo and Studio send visitors' LLM keys in this header, and the
 				# LaundryFlow demo its sandbox token in Authorization. Never log them.
 				request>headers>X-Llm-Key delete
+				request>headers>X-Llm-Key-Anthropic delete
+				request>headers>X-Llm-Key-Openai delete
 				request>headers>Cookie delete
 				request>headers>Authorization delete
 			}

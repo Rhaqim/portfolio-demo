@@ -185,6 +185,7 @@ func newServer(ctx context.Context, db *sql.DB) *server {
 		panic(err)
 	}
 	s.registerCaptionHooks()
+	s.registerCaptionGraph()
 	s.registerGraphFuncs()
 	return s
 }
