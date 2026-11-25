@@ -187,12 +187,19 @@ func TestTabletopRoundRunsAsAGraph(t *testing.T) {
 			_ = rows.Scan(&p)
 			out = append(out, p)
 		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
 		return out
 	}
 	waitFor := func(round int) {
 		deadline := time.Now().Add(30 * time.Second)
 		for time.Now().Before(deadline) {
-			if len(feed(round, "narration")) > 0 {
+			// The narration posts as soon as the GM finishes; the round is
+			// recorded once the followers have too.
+			var n int
+			_ = h.s.db.QueryRow(`SELECT COUNT(*) FROM demo_tt_rounds WHERE code = ? AND round = ?`, g, round).Scan(&n)
+			if len(feed(round, "narration")) > 0 && n > 0 {
 				return
 			}
 			for _, sys := range feed(round-1, "system") {

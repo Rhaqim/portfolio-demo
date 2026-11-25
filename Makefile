@@ -39,7 +39,7 @@ down: ## Stop the local stack (data volume is kept)
 
 .PHONY: restart
 restart: ## Rebuild and restart one service: make restart s=loom
-	@test -n "$(s)" || { echo "usage: make restart s=<gateway|hub|buckt|loom|ussd|laundryflow>"; exit 1; }
+	@test -n "$(s)" || { echo "usage: make restart s=<gateway|hub|buckt|loom|studio|ussd|laundryflow>"; exit 1; }
 	$(LOCAL) up --build -d $(s)
 
 .PHONY: logs
@@ -75,6 +75,10 @@ run-buckt: $(DATA_DIR) ## Run the buckt sandbox service on :8081
 .PHONY: run-loom
 run-loom: $(DATA_DIR) ## Run the loom service on :8082
 	cd $(GO_DIR) && DEMO_DB=$(abspath $(DATA_DIR))/demo.db ADDR=127.0.0.1:8082 go run ./cmd/loom
+
+.PHONY: run-studio
+run-studio: $(DATA_DIR) ## Run Noewright Studio's API on :8086
+	cd $(GO_DIR) && STUDIO_DB=$(abspath $(DATA_DIR))/studio.db ADDR=127.0.0.1:8086 go run ./cmd/studio
 
 .PHONY: run-laundryflow
 run-laundryflow: ## Run the LaundryFlow sandbox on :8085 (from LAUNDRYFLOW_DIR)
@@ -173,7 +177,7 @@ backup: ## Snapshot demo.db with SQLite's backup into ./backups/
 
 .PHONY: health
 health: ## Check every service through the gateway (API=..., TBH_API=... to target other hosts)
-	@for p in api/health api/ussd/health api/buckt/health api/loom/health; do \
+	@for p in api/health api/ussd/health api/buckt/health api/loom/health api/studio/health; do \
 		code=$$(curl -s -o /dev/null -w '%{http_code}' $(API)/$$p); \
 		printf "  %-24s %s\n" $$p $$code; \
 	done

@@ -11,6 +11,7 @@ services:
   hub: { image: demo-local/hub }
   buckt: { image: demo-local/buckt }
   loom: { image: demo-local/loom }
+  studio: { image: demo-local/studio }
   ussd: { image: demo-local/ussd }
   # The laundryflow repo checked out next to this one (override with LAUNDRYFLOW_DIR).
   laundryflow:

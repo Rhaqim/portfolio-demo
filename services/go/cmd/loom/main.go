@@ -185,6 +185,7 @@ func newServer(ctx context.Context, db *sql.DB) *server {
 		panic(err)
 	}
 	s.registerCaptionHooks()
+	s.registerCaptionGraph()
 	s.registerGraphFuncs()
 	return s
 }
@@ -447,21 +448,38 @@ func redact(s string) string {
 
 // stepView is what the UI's run inspector shows for each agent step.
 type stepView struct {
-	Role       string  `json:"role"`
-	Agent      string  `json:"agent"`
-	Index      int     `json:"index"`
-	Output     string  `json:"output"`
-	Prompt     string  `json:"prompt"`
-	DurationMs int     `json:"duration_ms"`
-	InTokens   int     `json:"input_tokens"`
-	OutTokens  int     `json:"output_tokens"`
-	USD        float64 `json:"usd"`
-	Priced     bool    `json:"priced"`
-	Error      string  `json:"error,omitempty"`
+	Role       string `json:"role"`
+	Agent      string `json:"agent"`
+	Index      int    `json:"index"`
+	Output     string `json:"output"`
+	Prompt     string `json:"prompt"`
+	DurationMs int    `json:"duration_ms"`
+	// Timing within a graph run, in ms from the request's arrival: when the
+	// node started, how long it ran (model calls, retries and hooks), and
+	// when its first streamed token arrived.
+	StartMs      int `json:"start_ms,omitempty"`
+	WallMs       int `json:"wall_ms,omitempty"`
+	FirstTokenMs int `json:"first_token_ms,omitempty"`
+	// ReasoningTokens is the share of OutTokens a reasoning model spent
+	// thinking before it answered, when the provider reports it.
+	ReasoningTokens int     `json:"reasoning_tokens,omitempty"`
+	InTokens        int     `json:"input_tokens"`
+	OutTokens       int     `json:"output_tokens"`
+	USD             float64 `json:"usd"`
+	Priced          bool    `json:"priced"`
+	Error           string  `json:"error,omitempty"`
 }
 
 func (s *server) viewStep(ctx context.Context, role string, st *noewright.Step) stepView {
 	v := stepView{Role: role, Index: st.Index, Output: noewright.ResultText(st.Result), DurationMs: st.DurationMs}
+	if st.Result != nil {
+		switch n := st.Result.Metadata()["reasoning_tokens"].(type) {
+		case int:
+			v.ReasoningTokens = n
+		case float64:
+			v.ReasoningTokens = int(n)
+		}
+	}
 	if a, err := s.e.Agents().GetByID(ctx, st.AgentID); err == nil {
 		v.Agent = a.Slug
 	}
