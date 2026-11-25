@@ -351,7 +351,7 @@ replay what they missed from the feed.
 - **ussdframework** pinned at `a12ae3c`: logs through the `log` facade (this
   service installs no logger, so nothing about a session is printed) and shows
   a menu error once.
-- **Noewright** `v0.1.0` (`github.com/rhaqim/noewright`, formerly
+- **Noewright** `v0.2.0` (`github.com/rhaqim/noewright`, formerly
   `github.com/rhaqim/loom`), with its Anthropic adapter at
   `github.com/rhaqim/noewright/generator/anthropic` `v0.2.0`. Both are tagged,
   so `make bump-noewright v=<version>` moves them together.
