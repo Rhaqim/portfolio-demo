@@ -191,6 +191,7 @@ Nigerian Pidgin: {{.Inputs.PCM}}`},
 
 	{"sc-open", dryRunSlug, "The service opens.", `(recorded)`},
 	{"sc-line", dryRunSlug, "A captioned line.", `(recorded)`},
+	{"sc-score", dryRunSlug, "The judge's scores for a line.", `(recorded)`},
 }
 
 func (s *server) seedCaptions(ctx context.Context) error {
@@ -241,6 +242,23 @@ func (s *server) registerCaptionHooks() {
 	})
 
 	s.e.Hooks().RegisterPost("captions-state", func(_ context.Context, req *noewright.StepRequest, res noewright.Result) (noewright.Result, error) {
+		if req.Session != nil && req.AgentSlug == "sc-score" {
+			// The judge scores a line after it is on screen; attach the scores.
+			var sc struct {
+				N     int                   `json:"n"`
+				Judge map[string]judgeScore `json:"judge"`
+			}
+			if json.Unmarshal([]byte(noewright.ResultText(res)), &sc) == nil {
+				c := loadCaptions(&req.Session.State)
+				for i := range c.Lines {
+					if c.Lines[i].N == sc.N {
+						c.Lines[i].Judge = sc.Judge
+					}
+				}
+				saveCaptions(&req.Session.State, c)
+			}
+			return res, nil
+		}
 		if req.Session == nil || req.AgentSlug != "sc-line" {
 			return res, nil
 		}
@@ -341,7 +359,8 @@ func (s *server) captionView(sess *noewright.Session, owner bool) captionView {
 }
 
 func (s *server) captionsConfig(w http.ResponseWriter, _ *http.Request) {
-	out := map[string]any{"langs": captionLangs, "sample": sampleSermon, "line_max": captionLineMax, "house": false}
+	out := map[string]any{"langs": captionLangs, "sample": sampleSermon, "line_max": captionLineMax, "house": false,
+		"graph": captionShape()}
 	if s.house != nil {
 		out["house"] = true
 		out["house_model"] = s.house.model.Label
@@ -449,6 +468,9 @@ func (s *server) captionsLine(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		Text string `json:"text"`
+		// Models picks a model per agent ("sc-caption": "anthropic/claude-…");
+		// agents left out use the line's default model and key.
+		Models map[string]string `json:"models,omitempty"`
 	}
 	if err := platform.Decode(w, r, 4096, &req); err != nil {
 		platform.Error(w, http.StatusBadRequest, err.Error())
@@ -465,18 +487,32 @@ func (s *server) captionsLine(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	run, err := s.captionRunner(r)
+	runs, def, err := s.captionRuns(r, req.Models)
 	if err != nil {
 		platform.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	vid := platform.Visitor(r)
-	release, err := s.acquire(vid)
+	// t0 starts the line's clock: the timings the page shows count from here,
+	// so a line held up by the previous line's judge says so.
+	t0 := time.Now()
+	wait, stopWait := context.WithTimeout(r.Context(), 90*time.Second)
+	release, err := s.acquireWait(wait, vid)
+	stopWait()
+	waited := time.Since(t0)
 	if err != nil {
 		platform.Error(w, http.StatusTooManyRequests, err.Error())
 		return
 	}
+	var once sync.Once
+	release = func(r func()) func() { return func() { once.Do(r) } }(release)
 	defer release()
+	// A line that waited for the previous one must start from the session as
+	// that line left it, not as it was when this request arrived.
+	if sess, err = s.e.Sessions().GetHeader(r.Context(), sess.ID); err != nil {
+		platform.Error(w, http.StatusInternalServerError, "couldn't load the service")
+		return
+	}
 	if err := s.ensureBudget(r.Context(), vid); err != nil {
 		platform.Error(w, http.StatusInternalServerError, "couldn't set up the step budget")
 		return
@@ -488,124 +524,7 @@ func (s *server) captionsLine(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	label := run.model.Label
-	if run.house {
-		label += " (the demo's key)"
-	}
-	st.send("session", map[string]any{"session_id": sess.ID, "dry_run": run.dry, "house": run.house, "model": label})
-	ledgerStep := func(role string, x *noewright.Step) {
-		v := s.viewStep(ctx, role, x)
-		applyCost(&v, x, s.costs(ctx, sess.ID))
-		st.send("step", v)
-	}
-
-	// 1. Find the scripture. The model's references are checked against the
-	// KJV, and exact citations a rule can read are added if the model missed them.
-	previous := ""
-	if n := len(c.Lines); n > 0 {
-		previous = c.Lines[n-1].Spoken
-	}
-	base := map[string]any{"effort": "low"}
-	det, err := s.e.RunStep(ctx, sess, noewright.StepRequest{AgentSlug: "sc-detect", Owner: ttOwner,
-		GeneratorOverride: run.generator, Overrides: run.overrides, Params: base,
-		Inputs: map[string]any{"Line": spoken, "Previous": previous}})
-	if err != nil && !errors.Is(err, noewright.ErrSessionNotPersisted) {
-		st.fail(err)
-		return
-	}
-	var found struct {
-		Refs []scriptureRef `json:"refs"`
-	}
-	if det != nil {
-		ledgerStep("detect", det)
-		_ = extractJSON(noewright.ResultText(det.Result), &found)
-	}
-	kjv := s.bibles["kjv"]
-	refs := normalizeRefs(append(found.Refs, detectRefs(spoken, kjv)...), kjv)
-	var lrefs []lineRef
-	for _, ref := range refs {
-		lr := lineRef{scriptureRef: ref, Label: ref.label(), Texts: map[string]string{"en": ref.passage(kjv)}}
-		for _, l := range captionLangs {
-			lr.Texts[l.Code] = ref.passage(s.bibles[bibleLangs[l.Code]])
-		}
-		lrefs = append(lrefs, lr)
-	}
-	if lrefs == nil {
-		lrefs = []lineRef{}
-	}
-	st.send("scripture", lrefs)
-
-	// 2. One turn: the English caption streams, three translators run in
-	// parallel under the scripture guard, and the judge scores them.
-	if sess.State.Vars == nil {
-		sess.State.Vars = map[string]any{}
-	}
-	for _, l := range captionLangs {
-		delete(sess.State.Vars, "guard_"+l.Code)
-	}
-	fa := func(slug, out string, inputs map[string]any) noewright.FlowAgent {
-		return noewright.FlowAgent{AgentSlug: slug, OutputKey: out, GeneratorOverride: run.generator, Overrides: run.overrides,
-			Params: map[string]any{"effort": "low"}, Inputs: inputs, MaxRetries: 1}
-	}
-	lead := fa("sc-caption", "Caption", nil)
-	lead.Stream = true
-	followers := []noewright.FlowAgent{}
-	for _, l := range captionLangs {
-		followers = append(followers, fa("sc-"+l.Code, l.Key, map[string]any{
-			"Scripture": scriptureBlock(lrefs, l.Code), "Guard": guardInput(lrefs, l.Code)}))
-	}
-	followers = append(followers, fa("sc-judge", "Judge", nil))
-
-	line := captionLine{Spoken: spoken, Captions: map[string]string{}, Refs: lrefs, Judge: map[string]judgeScore{},
-		Guard: map[string]string{}, DryRun: run.dry, At: time.Now().UTC()}
-	var mu sync.Mutex
-	_, err = s.e.RunTurn(ctx, sess, noewright.TurnRequest{
-		Owner:   ttOwner,
-		Flow:    noewright.Flow{Slug: "sermon-captions", Lead: lead, Followers: followers},
-		Inputs:  map[string]any{"Line": spoken, "ScriptureAll": scriptureBlock(lrefs, "en")},
-		OnChunk: func(ch noewright.Chunk) { st.send("chunk", map[string]string{"text": ch.Content}) },
-		OnStep: func(role string, x *noewright.Step, err error) {
-			if err != nil || x == nil {
-				st.send("step", stepView{Role: role, Agent: strings.TrimPrefix(role, "follower:"), Error: explain(err)})
-				return
-			}
-			ledgerStep(role, x)
-			v := s.viewStep(ctx, role, x)
-			text := strings.TrimSpace(noewright.ResultText(x.Result))
-			mu.Lock()
-			defer mu.Unlock()
-			switch code, _ := strings.CutPrefix(v.Agent, "sc-"); {
-			case v.Agent == "sc-caption":
-				line.English = text
-			case v.Agent == "sc-judge":
-				_ = extractJSON(text, &line.Judge)
-			case isCaptionLang(code):
-				line.Captions[code] = text
-				st.send("caption", map[string]string{"lang": code, "text": text})
-			}
-		},
-	})
-	if err != nil && !errors.Is(err, noewright.ErrSessionNotPersisted) {
-		st.fail(err)
-		return
-	}
-	for _, l := range captionLangs {
-		if g, _ := sess.State.Vars["guard_"+l.Code].(string); g != "" {
-			line.Guard[l.Code] = g
-		}
-	}
-
-	// 3. Record the finished line; the hook appends it to the service and
-	// every follower's stream picks it up from Noewright's events.
-	line.N = len(loadCaptions(&sess.State).Lines) + 1
-	payload, _ := json.Marshal(line)
-	if _, err := s.e.RecordStep(ctx, sess, noewright.ExternalStep{AgentSlug: "sc-line", Owner: ttOwner, Author: "speaker",
-		Result: noewright.NewTextResult(string(payload), "stop", 0, 0)}); err != nil && !errors.Is(err, noewright.ErrSessionNotPersisted) {
-		st.fail(err)
-		return
-	}
-	st.send("line", line)
-	st.send("done", map[string]bool{"ok": true})
+	s.runCaptionLine(ctx, st, sess, spoken, runs, def, &lineClock{t0: t0, waited: waited}, vid, release)
 }
 
 // captionsFollow is the congregation's view: the service's lines so far, then
@@ -660,6 +579,11 @@ func (s *server) captionsFollow(w http.ResponseWriter, r *http.Request) {
 				var line captionLine
 				if json.Unmarshal([]byte(noewright.ResultText(ev.Step.Result)), &line) == nil {
 					st.send("line", line)
+				}
+			case ev.Type == noewright.EventStepDone && ev.Step != nil && ev.Agent == "sc-score":
+				var sc map[string]any
+				if json.Unmarshal([]byte(noewright.ResultText(ev.Step.Result)), &sc) == nil {
+					st.send("judge", sc)
 				}
 			}
 		}

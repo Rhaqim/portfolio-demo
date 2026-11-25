@@ -201,6 +201,9 @@ func (s *server) janitor() {
 				stale = append(stale, b)
 			}
 		}
+		if err := rows.Err(); err != nil {
+			slog.Warn("janitor: stale sandboxes", "err", err)
+		}
 		rows.Close()
 		for _, b := range stale {
 			s.wipe("visitor-"+b.vid, b.root)

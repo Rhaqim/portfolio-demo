@@ -87,6 +87,28 @@ func main() {
 		panic(err)
 	}
 
+	s := newServer(ctx, db)
+	e := s.e
+	go s.gameJanitor()
+	gcCtx, stopGC := context.WithCancel(context.Background())
+	go e.GC().Run(gcCtx)
+
+	mux := s.routes()
+
+	platform.Serve("loom", platform.Env("ADDR", ":8080"), platform.WithVisitor(mux), func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		stopGC()
+		_ = e.Close(ctx)
+		db.Close()
+	})
+}
+
+// newServer builds the server and its Noewright engine on db: models,
+// generators (the dry-run one included), seeded agents, hooks and the graph
+// functions the demos call. main adds the background workers and routes.
+func newServer(ctx context.Context, db *sql.DB) *server {
+	var err error
 	s := &server{
 		db:       db,
 		models:   map[string]model{},
@@ -163,10 +185,13 @@ func main() {
 		panic(err)
 	}
 	s.registerCaptionHooks()
-	go s.gameJanitor()
-	gcCtx, stopGC := context.WithCancel(context.Background())
-	go e.GC().Run(gcCtx)
+	s.registerCaptionGraph()
+	s.registerGraphFuncs()
+	return s
+}
 
+// routes is the demo's HTTP API.
+func (s *server) routes() *http.ServeMux {
 	creates := platform.NewLimiter(10, time.Hour)
 	verifies := platform.NewLimiter(30, time.Hour)
 	acts := platform.NewLimiter(300, time.Hour)
@@ -210,14 +235,7 @@ func main() {
 	mux.HandleFunc("GET /api/loom/pipeline/preset", s.pipelinePreset)
 	mux.HandleFunc("POST /api/loom/pipeline/plan", s.pipelinePlan)
 	mux.HandleFunc("POST /api/loom/pipeline/run", s.runs.Limit(s.pipelineRun))
-
-	platform.Serve("loom", platform.Env("ADDR", ":8080"), platform.WithVisitor(mux), func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		stopGC()
-		_ = e.Close(ctx)
-		db.Close()
-	})
+	return mux
 }
 
 // gcConfig turns on Noewright's GC with retention rules for a public demo:
@@ -430,21 +448,38 @@ func redact(s string) string {
 
 // stepView is what the UI's run inspector shows for each agent step.
 type stepView struct {
-	Role       string  `json:"role"`
-	Agent      string  `json:"agent"`
-	Index      int     `json:"index"`
-	Output     string  `json:"output"`
-	Prompt     string  `json:"prompt"`
-	DurationMs int     `json:"duration_ms"`
-	InTokens   int     `json:"input_tokens"`
-	OutTokens  int     `json:"output_tokens"`
-	USD        float64 `json:"usd"`
-	Priced     bool    `json:"priced"`
-	Error      string  `json:"error,omitempty"`
+	Role       string `json:"role"`
+	Agent      string `json:"agent"`
+	Index      int    `json:"index"`
+	Output     string `json:"output"`
+	Prompt     string `json:"prompt"`
+	DurationMs int    `json:"duration_ms"`
+	// Timing within a graph run, in ms from the request's arrival: when the
+	// node started, how long it ran (model calls, retries and hooks), and
+	// when its first streamed token arrived.
+	StartMs      int `json:"start_ms,omitempty"`
+	WallMs       int `json:"wall_ms,omitempty"`
+	FirstTokenMs int `json:"first_token_ms,omitempty"`
+	// ReasoningTokens is the share of OutTokens a reasoning model spent
+	// thinking before it answered, when the provider reports it.
+	ReasoningTokens int     `json:"reasoning_tokens,omitempty"`
+	InTokens        int     `json:"input_tokens"`
+	OutTokens       int     `json:"output_tokens"`
+	USD             float64 `json:"usd"`
+	Priced          bool    `json:"priced"`
+	Error           string  `json:"error,omitempty"`
 }
 
 func (s *server) viewStep(ctx context.Context, role string, st *noewright.Step) stepView {
 	v := stepView{Role: role, Index: st.Index, Output: noewright.ResultText(st.Result), DurationMs: st.DurationMs}
+	if st.Result != nil {
+		switch n := st.Result.Metadata()["reasoning_tokens"].(type) {
+		case int:
+			v.ReasoningTokens = n
+		case float64:
+			v.ReasoningTokens = int(n)
+		}
+	}
 	if a, err := s.e.Agents().GetByID(ctx, st.AgentID); err == nil {
 		v.Agent = a.Slug
 	}

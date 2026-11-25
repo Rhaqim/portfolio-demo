@@ -35,7 +35,7 @@
 	}
 	handle @preflight {
 		header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
-		header Access-Control-Allow-Headers "Authorization, Content-Type, X-LLM-Key, X-LLM-Model, Last-Event-ID"
+		header Access-Control-Allow-Headers "Authorization, Content-Type, X-LLM-Key, X-LLM-Key-Anthropic, X-LLM-Key-OpenAI, X-LLM-Model, Last-Event-ID"
 		header Access-Control-Max-Age "600"
 		respond 204
 	}
@@ -54,9 +54,11 @@
 		format filter {
 			wrap json
 			fields {
-				# The loom demo sends visitors' LLM keys in this header, and the
+				# The loom demo and Studio send visitors' LLM keys in this header, and the
 				# LaundryFlow demo its sandbox token in Authorization. Never log them.
 				request>headers>X-Llm-Key delete
+				request>headers>X-Llm-Key-Anthropic delete
+				request>headers>X-Llm-Key-Openai delete
 				request>headers>Cookie delete
 				request>headers>Authorization delete
 			}
@@ -89,6 +91,12 @@
 		# Agent runs and game rooms stream server-sent events; flush every
 		# write, and let game streams stay open.
 		reverse_proxy loom:8080 {
+			flush_interval -1
+		}
+	}
+	handle /api/studio/* {
+		# Noewright Studio streams runs as server-sent events.
+		reverse_proxy studio:8080 {
 			flush_interval -1
 		}
 	}

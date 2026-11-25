@@ -7,9 +7,10 @@ as a sibling folder: `../portfolio`); this repo is only the **API** they call
 from the browser, running on one Hetzner box behind Cloudflare.
 
 | Page on rhaqim.com | API prefix | Service | Language |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `/demo/ussd` | `/api/ussd/*` | `services/ussd`: ussdframework behind actix | Rust |
 | `/demo/buckt` | `/api/buckt/*` | `services/go/cmd/buckt`: per-visitor buckt sandboxes | Go |
+| (Noewright Studio site) | `/api/studio/*` | `services/go/cmd/studio`: Studio's API | Go |
 | `/demo/noewright` | `/api/loom/*` | `services/go/cmd/loom`: multiplayer tabletop + agent pipeline | Go |
 | `/demo/forecast` | `/api/loom/desk/*` | `services/go/cmd/loom`: the Forecast Desk | Go |
 | `/demo/captions` | `/api/loom/captions/*` | `services/go/cmd/loom`: sermon captions | Go |
@@ -62,6 +63,37 @@ limit in the Claude Console.
 10-second busy timeout, and each service prefixes its tables (buckt via
 `WithTablePrefix("buckt_")`, Noewright's default `loom_`, `demo_` for the rest).
 
+## Noewright Studio (API)
+
+`services/go/cmd/studio` with the logic in `internal/studio` serves the API for
+Noewright Studio under `/api/studio/*`. The frontend is a separate Astro and
+Svelte site (the `noewright-studio` repo, next to this one).
+
+- *Visitors* are anonymous, identified by the demo visitor cookie. Each one's
+  records live in their own Noewright owner scope, `studio:<visitor>`, and each
+  starts with three starter graphs loaded from embedded bundles
+  (`internal/studio/templates`): a support desk (routing and a wait loop), an
+  incident postmortem (fan-out and joins) and an onboarding flow (waits for
+  text and a choice). Each template carries bundle tests, run in CI.
+- *Keys:* Studio has no key of its own. Without the visitor's key
+  (`X-LLM-Key` + `X-LLM-Model`, per request, never stored or logged) runs use
+  a simulator: the graph, routing, waits and costs are real, the text is not.
+- *Runs* stream as server-sent events: `session`, `node` (per node, with
+  tokens and cost), `chunk`, `done` (where the run waits, what ran, the cost).
+  A conversation is a Noewright session, resumed by id.
+- *Tests and evidence:* a graph's tests are its starter template's (read-only)
+  plus the visitor's own, usually saved from a conversation. Running them uses
+  the visitor's model or the simulator; each test's latest result (evidence,
+  output texts, outputs that changed since the last run) is kept in
+  `studio_results`. Test runs are capped at 20 an hour per visitor, since their
+  sessions sit outside the visitor's step budget.
+- *Download* exports a graph and everything it uses as a bundle, with its
+  tests and their latest evidence, its generators named `chat` for the
+  importer to map.
+- *Limits:* 300 agent steps per visitor per day (a Noewright budget), one run
+  at a time, 120 requests per minute.
+- *Data:* its own SQLite file, `studio.db`, on the shared volume.
+
 ## The Noewright demo
 
 The `loom` service (`cmd/loom`, `/api/loom/*`) runs on
@@ -74,9 +106,12 @@ six-character code (or the invite link `rhaqim.com/demo/noewright?game=CODE`; ol
 Up to six players join from their own browsers; everyone watches over SSE.
 Built on the shared-session features that arrived in loom v0.0.3.
 
-- *AI game master:* each round, a rules agent decides who needs a check, Go
-  rolls the d20s, then one Noewright turn streams the GM's narration to every
-  player while a referee, chronicler and suggester run in parallel.
+- *AI game master:* each round is one Noewright graph (`RunGraph`, see
+  `graphs.go`): a rules agent decides who needs a check, a Go function node
+  rolls the d20s against the sheets in the session snapshot and posts each roll
+  to the feed, then the GM streams its narration to every player while a
+  referee, chronicler and suggester run in parallel. The opening round starts
+  the graph at the GM, since there are no actions to check.
 - *Human game master:* the host narrates; their text is the recorded lead of
   the same Noewright turn (`TurnRequest.LeadResult`, authored by the host, no
   generator, no cost) and, with bookkeeping on, the same three AI followers
@@ -109,29 +144,35 @@ validates the wiring and plans it into parallel layers.
 
 **Forecast Desk.** A fictional eight-team league with play chips (`desk.go`,
 `desk_sim.go`). Matches are decided in Go from a seed, with odds from a Poisson
-model plus a 6% margin. One Noewright turn per match: the odds-maker streams a
-preview, the value hunter and contrarian pick in parallel, and the bankroll
-manager (planned into the next layer because it reads both picks) sizes their
-stakes. A post-hook, the risk referee, rejects an over-limit stake once with
-`ErrRetryWith` (the reason goes into the retry's prompt) and trims it on the
-retry. Settlement is a recorded step, so "What if?" forks before any matchday
-and replays it: same seed, same score, different bets. The backtest runs the
+model plus a 6% margin. One Noewright graph per match (`graphs.go`): the
+odds-maker streams a preview, the value hunter and contrarian pick in parallel,
+and the bankroll manager, joining both picks, sizes their stakes. A post-hook,
+the risk referee, rejects an over-limit stake once with `ErrRetryWith` (the
+reason goes into the retry's prompt) and trims it on the retry. A Go function
+node then plays the match from the seed and settles the bets; it is recorded as
+an `fd-settle` step, so "What if?" forks before any matchday and replays it:
+same seed, same score, different bets. The backtest runs the
 strategies as plain Go over up to 500 seeded matches, no model calls.
 
 **Sermon captions.** Live captions of a sermon in Yorùbá, Igbo and Nigerian
 Pidgin (`captions.go`, `bible.go`). Per spoken line, `sc-detect` finds Bible
 references (book code, chapter, verse, and whether the speaker read the passage
-aloud, named it or paraphrased it); Go drops any reference that doesn't exist and
-looks the rest up in three bundled Bibles (`cmd/loom/bible/`, see its NOTICE:
-KJV, and Biblica's Yorùbá and Igbo translations under CC BY-SA 4.0). One
-Noewright turn then streams a clean English caption (`sc-caption`, lead) while
-`sc-yo`, `sc-ig` and `sc-pcm` translate in parallel, each handed its own
-language's Bible text. A post-hook, the scripture guard, checks that a passage
+aloud, named it or paraphrased it); a Go function node drops any reference that
+doesn't exist and looks the rest up in three bundled Bibles (`cmd/loom/bible/`,
+see its NOTICE: KJV, and Biblica's Yorùbá and Igbo translations under CC BY-SA
+4.0). Each line is one Noewright graph (`captions_graph.go`): the English caption
+(`sc-caption`) needs only the spoken line, so it streams at once, in parallel
+with the detector; `sc-yo`, `sc-ig` and `sc-pcm` start when both are done, each
+handed its own language's Bible text by a pre-hook. A visitor can run every agent
+on one model and key, or pick a model per agent (keys per provider, in
+`X-LLM-Key-Anthropic` / `X-LLM-Key-OpenAI`); an agent without a key for its
+provider runs dry. A post-hook, the scripture guard, checks that a passage
 read aloud appears word for word in each caption (in-order word coverage of at
 least 60%): a miss sends the step back once with `ErrRetryWith`, a second miss is
-let through and flagged. `sc-judge` reads all three captions, so Noewright plans it
-into the next layer, and scores each for faithfulness. The finished line is a
-recorded step (`sc-line`) whose hook appends it to the session's state; the
+let through and flagged. The finished line is recorded (`sc-line`) and
+reaches the screen before `sc-judge` scores it: the scores follow in a recorded
+`sc-score` step, so the judge no longer delays the line. A line sent while the
+previous one is still being scored waits for it. The line step (`sc-line`) whose hook appends it to the session's state; the
 follow stream (`/captions/{id}/follow`, anyone with the id) replays the service
 and forwards new lines from `Engine.Subscribe`. Without a visitor key, lines run
 on `CAPTIONS_ANTHROPIC_API_KEY` while `CAPTIONS_LINES_PER_HOUR` (all visitors)
@@ -146,7 +187,7 @@ sessions after 8 days, Forecast Desk sessions after 7.
 
 ## Layout
 
-```
+```sh
 gateway/            Caddyfile (production, CORS), Caddyfile.local, Dockerfile
 services/go/        one Go module; internal/platform is shared plumbing
   cmd/hub           feedback API
@@ -168,7 +209,7 @@ docker-compose.local.yml  local overrides: API on http://localhost:8080
 
 | Command | What it does |
 | --- | --- |
-| `make up` / `make down` | Start or stop the local API on http://localhost:8080 |
+| `make up` / `make down` | Start or stop the local API on <http://localhost:8080> |
 | `make site` | Run the portfolio dev server against the local API |
 | `make logs s=loom` | Follow one service's logs |
 | `make check` | Formatting, `go vet`, Go and Rust tests, Caddyfile and compose validation |
@@ -228,7 +269,7 @@ steps below describe what the script does.
 4. **Firewall.** Allow SSH, and 80/443 **only from Cloudflare**. The services
    rate-limit on `CF-Connecting-IP`, which anyone who reaches the box directly
    could forge. Hetzner's Cloud Firewall with Cloudflare's ranges
-   (https://www.cloudflare.com/ips/) is simplest; ufw alone isn't enough,
+   (<https://www.cloudflare.com/ips/>) is simplest; ufw alone isn't enough,
    because Docker publishes ports through iptables and bypasses it.
 5. **Environment.** Copy `.env.example` to `/opt/demo/.env`; set `ADMIN_TOKEN`
    (`openssl rand -hex 32`). If the portfolio is served from another origin
@@ -250,15 +291,18 @@ steps below describe what the script does.
 ## Operating it
 
 **Read feedback.**
+
 ```bash
 curl -s -H "Authorization: Bearer $ADMIN_TOKEN" https://api.rhaqim.com/api/feedback | jq
 ```
+
 Or set `FEEDBACK_WEBHOOK_URL` (Slack or Discord) to get each one as a message.
 
 **Logs.** `docker compose logs -f loom`. Caddy logs every request with the
 `X-Llm-Key`, `Cookie` and `Authorization` headers removed.
 
 **Back up the database** with SQLite's backup (copying a WAL database mid-write is unsafe):
+
 ```bash
 docker run --rm -v demo_demo_data:/data -v "$PWD":/out alpine \
   sh -c 'apk add -q sqlite && sqlite3 /data/demo.db ".backup /out/demo-$(date +%F).db"'
@@ -307,7 +351,7 @@ replay what they missed from the feed.
 - **ussdframework** pinned at `a12ae3c`: logs through the `log` facade (this
   service installs no logger, so nothing about a session is printed) and shows
   a menu error once.
-- **Noewright** `v0.1.0` (`github.com/rhaqim/noewright`, formerly
+- **Noewright** `v0.2.0` (`github.com/rhaqim/noewright`, formerly
   `github.com/rhaqim/loom`), with its Anthropic adapter at
-  `github.com/rhaqim/noewright/generator/anthropic` `v0.1.0`. Both are tagged,
+  `github.com/rhaqim/noewright/generator/anthropic` `v0.2.0`. Both are tagged,
   so `make bump-noewright v=<version>` moves them together.
