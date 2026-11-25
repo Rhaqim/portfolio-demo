@@ -43,7 +43,10 @@ type Server struct {
 	byID   map[string]Model
 	busy   sync.Map // visitor → struct{}: one run at a time per visitor
 	limit  *platform.Limiter
-	seeded sync.Map // visitor → struct{}: starter templates loaded
+	// testRuns caps test runs per visitor per hour: test sessions do not
+	// count against the visitor's daily step budget.
+	testRuns *platform.Limiter
+	seeded   sync.Map // visitor → struct{}: starter templates loaded
 }
 
 const simulateSlug = "simulate"
@@ -56,7 +59,11 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	if cfg.StepsPerDay == 0 {
 		cfg.StepsPerDay = 300
 	}
-	s := &Server{cfg: cfg, models: defaultModels(), byID: map[string]Model{}, limit: platform.NewLimiter(120, time.Minute)}
+	s := &Server{cfg: cfg, models: defaultModels(), byID: map[string]Model{},
+		limit: platform.NewLimiter(120, time.Minute), testRuns: platform.NewLimiter(20, time.Hour)}
+	if err := ensureTables(ctx, cfg.DB); err != nil {
+		return nil, fmt.Errorf("studio: tables: %w", err)
+	}
 
 	sim := &simulator{}
 	gens := map[string]noewright.Generator{simulateSlug: sim}
@@ -111,6 +118,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET "+A+"/graphs/{slug}", s.getGraph)
 	mux.HandleFunc("POST "+A+"/graphs/{slug}/run", s.runGraph)
 	mux.HandleFunc("GET "+A+"/graphs/{slug}/bundle", s.downloadBundle)
+	mux.HandleFunc("GET "+A+"/graphs/{slug}/tests", s.listTests)
+	mux.HandleFunc("POST "+A+"/graphs/{slug}/tests", s.createTest)
+	mux.HandleFunc("DELETE "+A+"/graphs/{slug}/tests/{name}", s.deleteTest)
+	mux.HandleFunc("POST "+A+"/graphs/{slug}/tests/run", s.runTests)
 	return platform.WithVisitor(s.perVisitorLimit(mux))
 }
 

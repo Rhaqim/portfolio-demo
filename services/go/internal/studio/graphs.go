@@ -386,6 +386,10 @@ func (s *Server) downloadBundle(w http.ResponseWriter, r *http.Request) {
 			b.Requires.Generators[i].Slug = "chat"
 		}
 	}
+	if err := s.bundleTests(r.Context(), r, rec, b); err != nil {
+		platform.Error(w, http.StatusInternalServerError, "Couldn't add the tests to the bundle.")
+		return
+	}
 	b.Name = rec.Slug
 	b.CreatedBy = "Noewright Studio"
 	b.CreatedAt = time.Now().UTC().Format(time.RFC3339)

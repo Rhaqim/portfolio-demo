@@ -239,3 +239,78 @@ func TestTemplatesPassTheirTests(t *testing.T) {
 		}
 	}
 }
+
+// The quality screen: starter tests run and keep their last result; a
+// conversation saved as a test runs too; the bundle carries both, with evidence.
+func TestStudioTests(t *testing.T) {
+	_, ts := newTestServer(t)
+	c := newClient(t, ts)
+	c.do("GET", "/api/studio/session", nil)
+
+	code, out := c.do("GET", "/api/studio/graphs/support-desk/tests", nil)
+	var views []testView
+	_ = json.Unmarshal(out, &views)
+	if code != http.StatusOK || len(views) != 1 || views[0].Source != "starter" || views[0].Last != nil {
+		t.Fatalf("starter tests: %d %s", code, out)
+	}
+
+	type runOut struct {
+		Results   []noewright.BundleTestResult `json:"results"`
+		Simulated bool                         `json:"simulated"`
+	}
+	code, out = c.do("POST", "/api/studio/graphs/support-desk/tests/run", map[string]any{})
+	var ro runOut
+	_ = json.Unmarshal(out, &ro)
+	if code != http.StatusOK || len(ro.Results) != 1 || !ro.Results[0].Evidence.Passed || !ro.Simulated {
+		t.Fatalf("run starter tests: %d %s", code, out)
+	}
+	if ro.Results[0].Evidence.Model != simulateSlug || ro.Results[0].Texts["step1.triage"] != "REFUND" {
+		t.Fatalf("evidence model %q, texts %v", ro.Results[0].Evidence.Model, ro.Results[0].Texts)
+	}
+	_, out = c.do("GET", "/api/studio/graphs/support-desk/tests", nil)
+	_ = json.Unmarshal(out, &views)
+	if views[0].Last == nil || !views[0].Last.Evidence.Passed {
+		t.Fatalf("last result not kept: %s", out)
+	}
+
+	// Save a conversation as a test, with one expectation that will fail.
+	mine := noewright.BundleTest{Name: "general question", Steps: []noewright.BundleTestStep{
+		{Say: "How do I export my data?", Expect: noewright.BundleExpect{Waiting: "next", Ran: []string{"triage", "general"}}},
+		{Say: "Thanks", Expect: noewright.BundleExpect{Waiting: "done"}},
+	}}
+	if code, out := c.do("POST", "/api/studio/graphs/support-desk/tests", mine); code != http.StatusCreated {
+		t.Fatalf("save test: %d %s", code, out)
+	}
+	if code, _ := c.do("POST", "/api/studio/graphs/support-desk/tests", mine); code != http.StatusConflict {
+		t.Fatalf("duplicate name: %d", code)
+	}
+	if code, _ := c.do("POST", "/api/studio/graphs/support-desk/tests", noewright.BundleTest{Name: "empty"}); code != http.StatusBadRequest {
+		t.Fatalf("test with no steps: %d", code)
+	}
+	code, out = c.do("POST", "/api/studio/graphs/support-desk/tests/run", map[string]any{"only": []string{"general question"}})
+	_ = json.Unmarshal(out, &ro)
+	if code != http.StatusOK || len(ro.Results) != 1 || ro.Results[0].Evidence.Passed ||
+		!strings.Contains(strings.Join(ro.Results[0].Evidence.Failures, " "), `waits at "next"`) {
+		t.Fatalf("run my test: %d %s", code, out)
+	}
+
+	// Only your own tests can be deleted.
+	if code, _ := c.do("DELETE", "/api/studio/graphs/support-desk/tests/a%20refund,%20then%20a%20bug,%20in%20one%20conversation", nil); code != http.StatusNotFound {
+		t.Fatalf("delete a starter test: %d", code)
+	}
+
+	// The bundle carries both tests and the evidence of their last runs.
+	code, out = c.do("GET", "/api/studio/graphs/support-desk/bundle", nil)
+	b, err := noewright.ParseBundle(out)
+	if code != http.StatusOK || err != nil || len(b.Tests) != 2 || len(b.Evidence) != 2 {
+		t.Fatalf("bundle: %d, %v, %d tests, %d evidence", code, err, len(b.Tests), len(b.Evidence))
+	}
+	s2, _ := newTestServer(t)
+	if probs := s2.Engine().Bundles().Verify(context.Background(), b, noewright.ImportOptions{Generators: map[string]string{"chat": simulateSlug}}); len(probs) != 0 {
+		t.Fatalf("downloaded bundle does not verify: %v", probs)
+	}
+
+	if code, _ := c.do("DELETE", "/api/studio/graphs/support-desk/tests/general%20question", nil); code != http.StatusNoContent {
+		t.Fatalf("delete my test: %d", code)
+	}
+}

@@ -81,8 +81,15 @@ Svelte site (the `noewright-studio` repo, next to this one).
 - *Runs* stream as server-sent events: `session`, `node` (per node, with
   tokens and cost), `chunk`, `done` (where the run waits, what ran, the cost).
   A conversation is a Noewright session, resumed by id.
-- *Download* exports a graph and everything it uses as a bundle, its
-  generators named `chat` for the importer to map.
+- *Tests and evidence:* a graph's tests are its starter template's (read-only)
+  plus the visitor's own, usually saved from a conversation. Running them uses
+  the visitor's model or the simulator; each test's latest result (evidence,
+  output texts, outputs that changed since the last run) is kept in
+  `studio_results`. Test runs are capped at 20 an hour per visitor, since their
+  sessions sit outside the visitor's step budget.
+- *Download* exports a graph and everything it uses as a bundle, with its
+  tests and their latest evidence, its generators named `chat` for the
+  importer to map.
 - *Limits:* 300 agent steps per visitor per day (a Noewright budget), one run
   at a time, 120 requests per minute.
 - *Data:* its own SQLite file, `studio.db`, on the shared volume.
