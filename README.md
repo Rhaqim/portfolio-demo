@@ -7,7 +7,7 @@ as a sibling folder: `../portfolio`); this repo is only the **API** they call
 from the browser, running on one Hetzner box behind Cloudflare.
 
 | Page on rhaqim.com | API prefix | Service | Language |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `/demo/ussd` | `/api/ussd/*` | `services/ussd`: ussdframework behind actix | Rust |
 | `/demo/buckt` | `/api/buckt/*` | `services/go/cmd/buckt`: per-visitor buckt sandboxes | Go |
 | (Noewright Studio site) | `/api/studio/*` | `services/go/cmd/studio`: Studio's API | Go |
@@ -187,7 +187,7 @@ sessions after 8 days, Forecast Desk sessions after 7.
 
 ## Layout
 
-```
+```sh
 gateway/            Caddyfile (production, CORS), Caddyfile.local, Dockerfile
 services/go/        one Go module; internal/platform is shared plumbing
   cmd/hub           feedback API
@@ -209,7 +209,7 @@ docker-compose.local.yml  local overrides: API on http://localhost:8080
 
 | Command | What it does |
 | --- | --- |
-| `make up` / `make down` | Start or stop the local API on http://localhost:8080 |
+| `make up` / `make down` | Start or stop the local API on <http://localhost:8080> |
 | `make site` | Run the portfolio dev server against the local API |
 | `make logs s=loom` | Follow one service's logs |
 | `make check` | Formatting, `go vet`, Go and Rust tests, Caddyfile and compose validation |
@@ -269,7 +269,7 @@ steps below describe what the script does.
 4. **Firewall.** Allow SSH, and 80/443 **only from Cloudflare**. The services
    rate-limit on `CF-Connecting-IP`, which anyone who reaches the box directly
    could forge. Hetzner's Cloud Firewall with Cloudflare's ranges
-   (https://www.cloudflare.com/ips/) is simplest; ufw alone isn't enough,
+   (<https://www.cloudflare.com/ips/>) is simplest; ufw alone isn't enough,
    because Docker publishes ports through iptables and bypasses it.
 5. **Environment.** Copy `.env.example` to `/opt/demo/.env`; set `ADMIN_TOKEN`
    (`openssl rand -hex 32`). If the portfolio is served from another origin
@@ -291,15 +291,18 @@ steps below describe what the script does.
 ## Operating it
 
 **Read feedback.**
+
 ```bash
 curl -s -H "Authorization: Bearer $ADMIN_TOKEN" https://api.rhaqim.com/api/feedback | jq
 ```
+
 Or set `FEEDBACK_WEBHOOK_URL` (Slack or Discord) to get each one as a message.
 
 **Logs.** `docker compose logs -f loom`. Caddy logs every request with the
 `X-Llm-Key`, `Cookie` and `Authorization` headers removed.
 
 **Back up the database** with SQLite's backup (copying a WAL database mid-write is unsafe):
+
 ```bash
 docker run --rm -v demo_demo_data:/data -v "$PWD":/out alpine \
   sh -c 'apk add -q sqlite && sqlite3 /data/demo.db ".backup /out/demo-$(date +%F).db"'
