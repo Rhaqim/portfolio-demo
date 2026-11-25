@@ -1,0 +1,101 @@
+noewright: bundle/v1
+name: Incident postmortem
+requires:
+  generators:
+    - {slug: chat, modality: text}
+prompts:
+  - slug: pm-triage-sys
+    version: 1
+    kind: system
+    body: >-
+      You are an incident commander. From raw incident notes, write a five-line triage: one-sentence summary,
+      severity (SEV1-SEV4 with a one-line justification), affected services, detection method, current status.
+      Use only what the notes say.
+  - slug: pm-triage-ut
+    version: 1
+    kind: user_template
+    body: "Incident notes:\n{{.Inputs.action}}"
+  - slug: pm-timeline-sys
+    version: 1
+    kind: system
+    body: >-
+      You write incident timelines: a chronological list in UTC, one event per line, each marked DETECT,
+      RESPOND, MITIGATE or RESOLVE. Use only times present in the notes.
+  - slug: pm-timeline-ut
+    version: 1
+    kind: user_template
+    body: "Triage:\n{{.Inputs.Triage}}\n\nRaw notes:\n{{.Inputs.action}}"
+    variables: [Triage]
+  - slug: pm-impact-sys
+    version: 1
+    kind: system
+    body: >-
+      You assess incident impact: customer impact, business impact and open questions, as three short labelled
+      paragraphs. Flag anything the notes leave unconfirmed.
+  - slug: pm-impact-ut
+    version: 1
+    kind: user_template
+    body: "Triage:\n{{.Inputs.Triage}}\n\nRaw notes:\n{{.Inputs.action}}"
+    variables: [Triage]
+  - slug: pm-cause-sys
+    version: 1
+    kind: system
+    body: >-
+      You run blameless root-cause analysis. Walk five whys from symptom to root cause, then list contributing
+      factors. Blame systems and processes, never people.
+  - slug: pm-cause-ut
+    version: 1
+    kind: user_template
+    body: "Timeline:\n{{.Inputs.Timeline}}\n\nImpact:\n{{.Inputs.Impact}}"
+    variables: [Timeline, Impact]
+  - slug: pm-status-sys
+    version: 1
+    kind: system
+    body: >-
+      You write customer-facing status updates: plain language, no internal names, no blame, under 90 words.
+  - slug: pm-status-ut
+    version: 1
+    kind: user_template
+    body: "Triage:\n{{.Inputs.Triage}}\n\nImpact:\n{{.Inputs.Impact}}"
+    variables: [Triage, Impact]
+  - slug: pm-actions-sys
+    version: 1
+    kind: system
+    body: >-
+      You turn a root-cause analysis into 4 to 6 action items: [P0/P1/P2] action, owner role, and how we will
+      know it is done. Each must trace to a cause.
+  - slug: pm-actions-ut
+    version: 1
+    kind: user_template
+    body: "Root cause analysis:\n{{.Inputs.RootCause}}"
+    variables: [RootCause]
+agents:
+  - {slug: pm-triage, version: 1, modality: text, generator: chat, system_prompt: pm-triage-sys@1, user_template: pm-triage-ut@1}
+  - {slug: pm-timeline, version: 1, modality: text, generator: chat, system_prompt: pm-timeline-sys@1, user_template: pm-timeline-ut@1}
+  - {slug: pm-impact, version: 1, modality: text, generator: chat, system_prompt: pm-impact-sys@1, user_template: pm-impact-ut@1}
+  - {slug: pm-cause, version: 1, modality: text, generator: chat, system_prompt: pm-cause-sys@1, user_template: pm-cause-ut@1}
+  - {slug: pm-status, version: 1, modality: text, generator: chat, system_prompt: pm-status-sys@1, user_template: pm-status-ut@1}
+  - {slug: pm-actions, version: 1, modality: text, generator: chat, system_prompt: pm-actions-sys@1, user_template: pm-actions-ut@1}
+graphs:
+  - slug: incident-postmortem
+    version: 1
+    graph:
+      entry: triage
+      nodes:
+        - {id: triage, kind: agent, agent: {agent: pm-triage, version: 1, output: Triage, stream: true}, required: true}
+        - {id: timeline, kind: agent, agent: {agent: pm-timeline, version: 1, output: Timeline}}
+        - {id: impact, kind: agent, agent: {agent: pm-impact, version: 1, output: Impact}}
+        - {id: cause, kind: agent, agent: {agent: pm-cause, version: 1, output: RootCause}}
+        - {id: status, kind: agent, agent: {agent: pm-status, version: 1, output: StatusUpdate}}
+        - {id: actions, kind: agent, agent: {agent: pm-actions, version: 1, output: Actions}}
+      edges:
+        - {from: triage, to: [timeline, impact]}
+        - {from: timeline, to: [cause]}
+        - {from: impact, to: [cause, status]}
+        - {from: cause, to: [actions]}
+tests:
+  - name: every section is written
+    graph: incident-postmortem@1
+    steps:
+      - say: "14:02 UTC payments-api 502s. 14:05 on-call acks. 14:30 roll back v2.31. 14:44 errors stop. ~18% of checkouts failed."
+        expect: {waiting: done, ran: [triage, timeline, impact, cause, status, actions], no_errors: true}

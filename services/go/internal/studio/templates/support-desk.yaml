@@ -1,0 +1,70 @@
+noewright: bundle/v1
+name: Support desk
+requires:
+  generators:
+    - {slug: chat, modality: text}
+prompts:
+  - slug: support-triage-sys
+    version: 1
+    kind: system
+    body: >-
+      You sort customer messages for a software company. Answer with one of:
+      REFUND [money back, refund, charged, paid twice], BUG [crash, error, broken, bug, freezes], GENERAL.
+      Reply with the single word only.
+  - slug: support-triage-ut
+    version: 1
+    kind: user_template
+    body: "Customer message:\n{{.Inputs.action}}"
+  - slug: support-refund-sys
+    version: 1
+    kind: system
+    body: >-
+      You handle refund requests. Acknowledge the problem, say what happens next and when, in three sentences
+      or fewer. Never promise an amount you cannot see.
+  - slug: support-bug-sys
+    version: 1
+    kind: system
+    body: >-
+      You handle bug reports. Thank the customer, ask for the one detail an engineer would need next, and give
+      a workaround if one is obvious. Three sentences or fewer.
+  - slug: support-general-sys
+    version: 1
+    kind: system
+    body: You answer general questions about the product, briefly and plainly.
+  - slug: support-reply-ut
+    version: 1
+    kind: user_template
+    body: "Customer message:\n{{.Inputs.action}}\n\nCategory: {{.Inputs.Category}}"
+    variables: [Category]
+agents:
+  - {slug: support-triage, version: 1, modality: text, generator: chat, system_prompt: support-triage-sys@1, user_template: support-triage-ut@1, params: {temperature: 0, max_tokens: 10}}
+  - {slug: support-refund, version: 1, modality: text, generator: chat, system_prompt: support-refund-sys@1, user_template: support-reply-ut@1, params: {max_tokens: 300}}
+  - {slug: support-bug, version: 1, modality: text, generator: chat, system_prompt: support-bug-sys@1, user_template: support-reply-ut@1, params: {max_tokens: 300}}
+  - {slug: support-general, version: 1, modality: text, generator: chat, system_prompt: support-general-sys@1, user_template: support-reply-ut@1, params: {max_tokens: 300}}
+graphs:
+  - slug: support-desk
+    version: 1
+    graph:
+      entry: triage
+      nodes:
+        - {id: triage, kind: agent, agent: {agent: support-triage, version: 1, output: Category}}
+        - {id: refund, kind: agent, agent: {agent: support-refund, version: 1, output: Reply, stream: true}}
+        - {id: bug, kind: agent, agent: {agent: support-bug, version: 1, output: BugReply, stream: true}}
+        - {id: general, kind: agent, agent: {agent: support-general, version: 1, output: GeneralReply, stream: true}}
+        - {id: next, kind: wait, wait: {expect: text, prompt: "Anything else? Type the customer's next message."}}
+      edges:
+        - {from: triage, to: [refund], when: "inputs.Category contains 'REFUND'"}
+        - {from: triage, to: [bug], when: "inputs.Category contains 'BUG'"}
+        - {from: triage, to: [general], default: true}
+        - {from: refund, to: [next]}
+        - {from: bug, to: [next]}
+        - {from: general, to: [next]}
+        - {from: next, to: [triage]}
+tests:
+  - name: a refund, then a bug, in one conversation
+    graph: support-desk@1
+    steps:
+      - say: I was charged twice for my plan this month.
+        expect: {waiting: next, ran: [triage, refund], skipped: [bug, general], contains: {triage: REFUND}}
+      - say: Now the app crashes when I open settings.
+        expect: {waiting: next, ran: [triage, bug], skipped: [refund, general], contains: {triage: BUG}}

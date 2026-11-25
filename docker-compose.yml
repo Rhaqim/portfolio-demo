@@ -30,7 +30,7 @@ services:
       - ./certs:/certs:ro
       - caddy_data:/data
       - caddy_config:/config
-    depends_on: [hub, ussd, buckt, loom, laundryflow]
+    depends_on: [hub, ussd, buckt, loom, studio, laundryflow]
     mem_limit: 128m
 
   hub:
@@ -70,6 +70,18 @@ services:
     volumes: [demo_data:/data]
     mem_limit: 256m
 
+  studio:
+    <<: *service
+    image: ${REGISTRY:-ghcr.io/rhaqim/demo}/studio:${TAG:-latest}
+    build: { context: services/go, args: { CMD: studio } }
+    environment:
+      # Its own SQLite file on the shared volume: visitors' graphs and
+      # conversations stay apart from the demos' data.
+      STUDIO_DB: /data/studio.db
+      STUDIO_STEPS: ${STUDIO_STEPS:-300}
+    volumes: [demo_data:/data]
+    mem_limit: 256m
+
   laundryflow:
     # Served on api.thebinaryhouse.studio only. Built by CI from the private
     # Rhaqim/laundryflow repo (its own Dockerfile); the demo is the sandbox
@@ -95,8 +107,9 @@ services:
     mem_limit: 128m
 
 volumes:
-  # One volume, one SQLite file (demo.db) shared by hub, buckt and loom, plus
-  # buckt's media. Each service namespaces its tables: demo_*, buckt_*, loom_*.
+  # One volume: one SQLite file (demo.db) shared by hub, buckt and loom, which
+  # namespace their tables (demo_*, buckt_*, loom_*), Studio's own studio.db,
+  # and buckt's media.
   demo_data:
   caddy_data:
   caddy_config:

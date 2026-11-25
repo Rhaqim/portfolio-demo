@@ -46,6 +46,7 @@ jobs:
           - { name: hub, context: services/go, dockerfile: services/go/Dockerfile, cmd: hub }
           - { name: buckt, context: services/go, dockerfile: services/go/Dockerfile, cmd: buckt }
           - { name: loom, context: services/go, dockerfile: services/go/Dockerfile, cmd: loom }
+          - { name: studio, context: services/go, dockerfile: services/go/Dockerfile, cmd: studio }
           - { name: ussd, context: services/ussd, dockerfile: services/ussd/Dockerfile, cmd: "" }
           - { name: laundryflow, context: laundryflow, dockerfile: laundryflow/Dockerfile, cmd: "", repo: Rhaqim/laundryflow }
     steps:
@@ -140,7 +141,7 @@ jobs:
           TBH: ${{ vars.TBH_DOMAIN || 'api.thebinaryhouse.studio' }}
         run: |
           # Hit Caddy on the box itself (-k: the origin cert is only trusted by Cloudflare).
-          for url in $DOMAIN/api/health $DOMAIN/api/ussd/health $DOMAIN/api/buckt/health $DOMAIN/api/loom/health $TBH/api/laundryflow/health; do
+          for url in $DOMAIN/api/health $DOMAIN/api/ussd/health $DOMAIN/api/buckt/health $DOMAIN/api/loom/health $DOMAIN/api/studio/health $TBH/api/laundryflow/health; do
             host="${url%%/*}"; path="${url#*/}"
             ok=""
             for i in $(seq 1 15); do

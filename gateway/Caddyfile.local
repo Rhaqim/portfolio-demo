@@ -42,6 +42,11 @@
 			flush_interval -1
 		}
 	}
+	handle /api/studio/* {
+		reverse_proxy studio:8080 {
+			flush_interval -1
+		}
+	}
 	handle /api/* {
 		reverse_proxy hub:8080
 	}

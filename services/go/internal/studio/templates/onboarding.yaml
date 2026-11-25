@@ -1,0 +1,49 @@
+noewright: bundle/v1
+name: Onboarding
+requires:
+  generators:
+    - {slug: chat, modality: text}
+prompts:
+  - slug: onb-greet-sys
+    version: 1
+    kind: system
+    body: You welcome new users to a product in one friendly sentence, then ask for their name.
+  - slug: onb-greet-ut
+    version: 1
+    kind: user_template
+    body: "The user opened the app and said: {{.Inputs.action}}"
+  - slug: onb-plan-sys
+    version: 1
+    kind: system
+    body: >-
+      You write a three-step first-week plan for a new user, tailored to what they want to do. Address them by
+      name. Keep each step to one line.
+  - slug: onb-plan-ut
+    version: 1
+    kind: user_template
+    body: "Name: {{.Inputs.Name}}\nWants to: {{.Inputs.Goal}}"
+    variables: [Name, Goal]
+agents:
+  - {slug: onb-greet, version: 1, modality: text, generator: chat, system_prompt: onb-greet-sys@1, user_template: onb-greet-ut@1}
+  - {slug: onb-plan, version: 1, modality: text, generator: chat, system_prompt: onb-plan-sys@1, user_template: onb-plan-ut@1}
+graphs:
+  - slug: onboarding
+    version: 1
+    graph:
+      entry: greet
+      nodes:
+        - {id: greet, kind: agent, agent: {agent: onb-greet, version: 1, output: Greeting, stream: true}}
+        - {id: name, kind: wait, output: Name, wait: {expect: text, prompt: "What's your name?"}}
+        - {id: goal, kind: wait, output: Goal, wait: {expect: choice, options: [build, learn, explore], prompt: "What brings you here?"}}
+        - {id: plan, kind: agent, agent: {agent: onb-plan, version: 1, output: Plan, stream: true}}
+      edges:
+        - {from: greet, to: [name]}
+        - {from: name, to: [goal]}
+        - {from: goal, to: [plan]}
+tests:
+  - name: asks twice, then plans
+    graph: onboarding@1
+    steps:
+      - {say: hello, expect: {waiting: name, ran: [greet]}}
+      - {say: Ada, expect: {waiting: goal}}
+      - {select: build, expect: {waiting: done, ran: [plan], contains: {plan: Ada}}}

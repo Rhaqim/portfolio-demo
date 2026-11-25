@@ -10,6 +10,7 @@ from the browser, running on one Hetzner box behind Cloudflare.
 |---|---|---|---|
 | `/demo/ussd` | `/api/ussd/*` | `services/ussd`: ussdframework behind actix | Rust |
 | `/demo/buckt` | `/api/buckt/*` | `services/go/cmd/buckt`: per-visitor buckt sandboxes | Go |
+| (Noewright Studio site) | `/api/studio/*` | `services/go/cmd/studio`: Studio's API | Go |
 | `/demo/noewright` | `/api/loom/*` | `services/go/cmd/loom`: multiplayer tabletop + agent pipeline | Go |
 | `/demo/forecast` | `/api/loom/desk/*` | `services/go/cmd/loom`: the Forecast Desk | Go |
 | `/demo/captions` | `/api/loom/captions/*` | `services/go/cmd/loom`: sermon captions | Go |
@@ -61,6 +62,30 @@ limit in the Claude Console.
 **One SQLite file.** Hub, buckt and loom share `demo.db`: one host, WAL mode,
 10-second busy timeout, and each service prefixes its tables (buckt via
 `WithTablePrefix("buckt_")`, Noewright's default `loom_`, `demo_` for the rest).
+
+## Noewright Studio (API)
+
+`services/go/cmd/studio` with the logic in `internal/studio` serves the API for
+Noewright Studio under `/api/studio/*`. The frontend is a separate Astro and
+Svelte site (the `noewright-studio` repo, next to this one).
+
+- *Visitors* are anonymous, identified by the demo visitor cookie. Each one's
+  records live in their own Noewright owner scope, `studio:<visitor>`, and each
+  starts with three starter graphs loaded from embedded bundles
+  (`internal/studio/templates`): a support desk (routing and a wait loop), an
+  incident postmortem (fan-out and joins) and an onboarding flow (waits for
+  text and a choice). Each template carries bundle tests, run in CI.
+- *Keys:* Studio has no key of its own. Without the visitor's key
+  (`X-LLM-Key` + `X-LLM-Model`, per request, never stored or logged) runs use
+  a simulator: the graph, routing, waits and costs are real, the text is not.
+- *Runs* stream as server-sent events: `session`, `node` (per node, with
+  tokens and cost), `chunk`, `done` (where the run waits, what ran, the cost).
+  A conversation is a Noewright session, resumed by id.
+- *Download* exports a graph and everything it uses as a bundle, its
+  generators named `chat` for the importer to map.
+- *Limits:* 300 agent steps per visitor per day (a Noewright budget), one run
+  at a time, 120 requests per minute.
+- *Data:* its own SQLite file, `studio.db`, on the shared volume.
 
 ## The Noewright demo
 
